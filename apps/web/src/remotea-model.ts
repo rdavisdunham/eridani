@@ -852,6 +852,13 @@ function commandTone(c: RunCommand): TimelineEntry["tone"] {
 }
 /** needs_you reasons that stop on the plan, before any work: the proposals review and the hyperplan final-plan
  * approval. Their own cards decide them; the review packet, Edit criteria and Judge again stay away. */
+/** A run that is stopping while its computer is offline: the stop cannot be confirmed, and the owner may close the
+ * run anyway (POST /remotea/runs/{id}/stop/close). Never offered while the computer can still answer. */
+export function canCloseUnconfirmedStop(run: Pick<Run, "state" | "host">): boolean {
+  return run.state === "stopping" && !!run.host && !run.host.connected;
+}
+export const CLOSE_UNCONFIRMED_STOP = "Close this run without confirmation? The computer it ran on is offline, so Eridani cannot confirm the agent stopped. If that computer comes back, the agent may still be running there until it is cleaned up.";
+
 /** The agent's latest message in an open brainstorm: its last finished turn of the current generation. */
 export function brainstormSaid(run: Pick<RunDetail, "turns" | "generation">): string {
   const mine = (run.turns ?? []).filter(t => t.role !== "user" && t.text.trim() && t.generation === run.generation);

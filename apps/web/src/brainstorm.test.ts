@@ -25,3 +25,14 @@ describe("brainstorm: talk it through before planning", () => {
     expect(stopCard(run)).toBeNull();
   });
 });
+
+describe("a stop the computer never confirmed", () => {
+  it("can be closed by the owner only while the computer is offline", async () => {
+    const { canCloseUnconfirmedStop } = await import("./remotea-model");
+    const host = (connected: boolean) => ({ id: "h", name: "PC", connected });
+    expect(canCloseUnconfirmedStop({ state: "stopping", host: host(false) })).toBe(true);
+    expect(canCloseUnconfirmedStop({ state: "stopping", host: host(true) })).toBe(false);
+    expect(canCloseUnconfirmedStop({ state: "executing", host: host(false) })).toBe(false);
+    expect(canCloseUnconfirmedStop({ state: "stopping", host: null })).toBe(false);
+  });
+});

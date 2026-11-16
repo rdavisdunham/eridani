@@ -20,6 +20,7 @@ It refuses any origin that is not a sandbox, and spends real tokens (about two m
 SANDBOX_ENV names a private file with ORIGIN and OWNER_TOKEN lines (or set SANDBOX_ORIGIN and SANDBOX_TOKEN).
 """
 
+import contextlib
 import json
 import os
 import shutil
@@ -291,7 +292,14 @@ def main():
             owner.call("PUT", "/remotea/auto-start", {"enabled": False, "targets": [], "daily_cap": 5, "host_cap": 2,
                                                       "harness": "claude"})
             active = owner.get("/remotea/runs?active=true")
-            stopping = [row["id"] for row in (active.get("items", active) if isinstance(active, dict) else active)]
+            rows = active.get("items", active) if isinstance(active, dict) else active
+            # Runs an earlier, interrupted smoke test left stopping: their throwaway host is gone and will never
+            # confirm, so close them (refused for a host that is still connected, which is this run's own).
+            for row in rows:
+                if row["state"] == "stopping":
+                    with contextlib.suppress(AssertionError):
+                        owner.post(f"/remotea/runs/{row['id']}/stop/close")
+            stopping = [row["id"] for row in rows if row["state"] != "stopping"]
             for run_id in stopping:
                 owner.post(f"/remotea/runs/{run_id}/stop", {"mode": "kill"})
             if host is not None and stopping:

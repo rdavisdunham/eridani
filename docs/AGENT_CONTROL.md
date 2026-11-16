@@ -943,7 +943,7 @@ Eridani, works with any harness, and writes nothing into the repository.
 - The stop comes when the plan is submitted, while the agent's turn is still open. An answer sent in those seconds
   marks that turn's end as a continuation (`planning_turn_pending`, now set for managed sessions too), so it is
   not read as a planning turn that ended without a plan.
-- The judge receives the brief and the owner's answer as `direction`: context, never evidence (`judge-v7`). Since `judge-v8` the judge is also told that a record older than the turn (`completion.pr_fresh` or `merged_fresh` false) is not evidence of missing work, and `agent_judge.fresh_record` asks the host for a new report (`worktrees.scan`, up to 20 seconds) before the evidence is read.
+- The judge receives the brief and the owner's answer as `direction`: context, never evidence (`judge-v7`). Since `judge-v8` the judge is also told that a record older than the turn (`completion.pr_fresh` or `merged_fresh` false) is not evidence of missing work, and `agent_judge.fresh_record` asks the host for a new report (`worktrees.scan`, up to 20 seconds) before the evidence is read. Since `judge-v9` untracked leftovers of running the code (`__pycache__`, caches, logs) are not uncommitted work.
 - Runs with a reviewer (hyperplan), freestyle runs, and runs whose task has another route or none are unchanged. A
   brief sent by an agent nobody asked is stored and has no effect.
 

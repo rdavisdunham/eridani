@@ -210,8 +210,9 @@ def pull_request(owner, host, target_id):
         def mergeable():
             run = owner.run(run_id)
             panel = run.get("merge") or {}
-            if run["state"] in SETTLED or (run["state"] == "needs_you" and run["state_reason"] not in ("awaiting_merge", "merged")
-                                           and panel.get("status") not in ("ready", "waiting_ci", "unknown", "working")):
+            # Stopped for the owner for any reason but the merge itself: this scenario has nothing to wait for.
+            if run["state"] in SETTLED or (run["state"] == "needs_you" and run["state_reason"] not in (
+                    "awaiting_merge", "merged", "pr_unknown") and panel.get("status") != "ready"):
                 raise AssertionError(f"stopped at {where(run)} with the pull request {panel.get('status')}: {panel.get('detail')}")
             return panel.get("status") == "ready" and run
         run = until(mergeable, PLAN + WORK + CI_WAIT, "a pull request with passing CI, ready to merge", interval=5)

@@ -73,4 +73,10 @@ def test_the_wait_is_bounded_and_an_older_host_is_not_asked(host):
 
 
 def test_the_judge_is_told_a_stale_record_is_not_evidence_of_missing_work():
-    assert "never send the agent back for it" in judge.SYSTEM and judge.PROMPT_VERSION == "judge-v8"
+    assert "never send the agent back for it" in judge.SYSTEM and judge.PROMPT_VERSION == "judge-v9"
+
+
+def test_the_judge_is_told_untracked_leftovers_are_not_uncommitted_work():
+    """The second cause the same smoke test found: the verify command left `__pycache__` in the worktree, the host
+    called the worktree uncommitted, and the judge sent committed work back."""
+    assert "`__pycache__`" in judge.SYSTEM and "treat the work as committed" in judge.SYSTEM

@@ -39,7 +39,7 @@ from .domain import DomainError
 from .models import Job, now
 from .session_models import AgentAttempt, AgentHost, AgentRun, AgentSession, AgentTurn
 
-PROMPT_VERSION = "judge-v8"
+PROMPT_VERSION = "judge-v9"
 POLICIES = ("code_ready", "pr_open", "pr_merged")
 RETRIES = 2
 TURN_CHARS = 24_000
@@ -59,7 +59,11 @@ SYSTEM = (
     "`patch`, the diff of the worktree against the point where its branch left the base branch). Use `changes` to "
     "check criteria about what the code contains or does, and to check the agent's account of its work against "
     "what was changed. `changes.untracked` names new files that are not added to git yet: their content is not "
-    "shown. When `changes.patch_truncated` is true the patch is cut, so a change you cannot find in it may still "
+    "shown. An untracked file the plan's work should have created is work that is not committed. Untracked "
+    "leftovers of running the code (caches such as `__pycache__`, compiled files, logs, coverage output) are not "
+    "work: never send the agent back to commit or remove them, and never count them against a criterion. On an "
+    "older host `changes.uncommitted` is also true when only untracked files exist, so when it is true and "
+    "`changes.untracked` lists only such leftovers, treat the work as committed. When `changes.patch_truncated` is true the patch is cut, so a change you cannot find in it may still "
     "exist: that is unclear, not missing. When `changes.available` is false the change could not be read "
     "(`changes.reason`): it says nothing about the work, so judge on the other evidence as before. "
     "`direction`, when present, is context and never evidence that work was done: the agent's brief before it "
@@ -68,8 +72,10 @@ SYSTEM = (
     "`completion.pr_fresh` and `completion.merged_fresh` say whether the host's record was reported after this turn "
     "(`completion.as_of`). When one is false, that part of the record is older than the turn: it does not show that "
     "a commit, a push or a pull request is missing, so never send the agent back for it and never answer needs_you "
-    "because of it. Judge whether the work is committed from `changes` (`uncommitted` false), and leave pushing and "
-    "the pull request to the completion policy, which Eridani checks against a fresh record after your verdict. "
+    "because of it. Then judge whether the work is committed from `changes`, and give a criterion that is only "
+    "about committing, pushing or opening the pull request the status met when `changes` shows the work committed: "
+    "a stale record must not make the verdict not_met. Pushing and the pull request are checked by the completion "
+    "policy, which Eridani applies against a fresh record after your verdict. "
     "For each criterion give status met only when that evidence shows it; point to it. A criterion the evidence "
     "cannot show either way is unclear. When `verify.infra` is true the verification could not run on the host "
     "(`verify.category`, `verify.action`): it says nothing about the code, so never blame the code for it. "

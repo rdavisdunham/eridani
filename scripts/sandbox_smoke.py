@@ -8,6 +8,9 @@ installed Claude Code (tests/protocol_harness.RealAgentHost), linked to the sand
     1. Auto: a labelled task is routed, started, planned, done, verified and judged with nobody acting. The scratch
        repository has no GitHub CI, so the run then stops for approval; the script approves and the task completes.
     2. Brainstorm: a run opens as a conversation, takes one reply, and plans on "Plan it".
+    3. Pull request (`pr`, by itself, with SANDBOX_GITHUB_REPO=<owner>/<a throwaway repository>): the agent pushes and
+       opens a pull request, GitHub's CI passes, and the script merges it from Eridani. The agent gets this machine's
+       GitHub token for the length of the run.
 
 It refuses any origin that is not a sandbox, and spends real tokens (about two minutes of Sonnet).
 
@@ -20,6 +23,7 @@ SANDBOX_ENV names a private file with ORIGIN and OWNER_TOKEN lines (or set SANDB
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -30,7 +34,7 @@ import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
-from protocol_harness import LINK_PATH, RealAgentHost, access_token, missing, remotea_checkout, tail, until  # noqa: E402
+from protocol_harness import GitHubAgentHost, LINK_PATH, RealAgentHost, access_token, missing, remotea_checkout, tail, until  # noqa: E402
 
 PLAN, WORK, CI_WAIT = 420, 600, 900  # Seconds: a plan; the work, verify and verdict; three CI reads two minutes apart.
 SETTLED = ("completed", "stopped", "capped", "failed")
@@ -173,11 +177,84 @@ def brainstorm(owner, host, target_id):
     return {"run": run_id, "opening": opening[:300], "criteria": criteria}
 
 
-SCENARIOS = {"auto": auto, "brainstorm": brainstorm}
+def gh(*args):
+    out = subprocess.run(["gh", *args], capture_output=True, text=True, check=False)
+    if out.returncode:
+        raise AssertionError(f"gh {' '.join(args[:3])}: {out.stderr.strip()[:300]}")
+    return out.stdout
+
+
+def pull_request(owner, host, target_id):
+    """A labelled task to a merged pull request: the agent pushes and opens it, GitHub's CI passes, the owner merges
+    from Eridani. Needs the GitHub host (SANDBOX_GITHUB_REPO)."""
+    slug = host.slug
+    suffix = uuid.uuid4().hex[:6]
+    owner.call("PUT", "/remotea/auto-start", {"enabled": True, "targets": [target_id], "daily_cap": 50, "host_cap": 2,
+                                              "harness": "claude"})
+    task = owner.task(f"Add greet_{suffix}", tags=["ai-assignable"], execution_target_id=target_id,
+                      notes=f"In greeting.py, add greet_{suffix}(name) that returns 'Hello, <name>! ({suffix})'. Keep "
+                            "everything else in the file. Commit, push the branch and open a pull request.")
+    started = time.monotonic()
+    ready = until(lambda: (r := owner.get(f"/remotea/tasks/{task['id']}/readiness"))["route"] and r, 120,
+                  "the worker's readiness pass to route the task", interval=2)
+    assert ready["route"] == "auto", f"routed {ready['route']}, not auto: {ready['reasons']} risks {ready['risks']}"
+
+    def started_run():
+        rows = owner.get(f"/remotea/runs?task_id={task['id']}")
+        rows = rows.get("items", rows) if isinstance(rows, dict) else rows
+        return rows[0]["id"] if rows else None
+    run_id = until(started_run, 180, "auto-start to start a run", interval=2)
+    branch = None
+    try:
+        # Planned, done, verified, judged; then GitHub's CI on the pull request is the last word.
+        def mergeable():
+            run = owner.run(run_id)
+            panel = run.get("merge") or {}
+            if run["state"] in SETTLED or (run["state"] == "needs_you" and run["state_reason"] not in ("awaiting_merge", "merged")
+                                           and panel.get("status") not in ("ready", "waiting_ci", "unknown", "working")):
+                raise AssertionError(f"stopped at {where(run)} with the pull request {panel.get('status')}: {panel.get('detail')}")
+            return panel.get("status") == "ready" and run
+        run = until(mergeable, PLAN + WORK + CI_WAIT, "a pull request with passing CI, ready to merge", interval=5)
+        ready_s = time.monotonic() - started
+        panel = run["merge"]
+        number, branch = panel["pr"]["number"], run.get("branch")
+        assert panel["ci"] == "passed", panel
+        seen = json.loads(gh("pr", "view", str(number), "-R", slug, "--json", "state,headRefName,statusCheckRollup,files"))
+        assert seen["state"] == "OPEN" and "greeting.py" in [f["path"] for f in seen["files"]], seen
+        assert [c.get("conclusion") for c in seen["statusCheckRollup"]] == ["SUCCESS"], seen["statusCheckRollup"]
+        owner.post(f"/remotea/runs/{run_id}/merge", {"expected_head_sha": panel["pr"]["head_sha"]})
+        until(lambda: (owner.run(run_id).get("merge") or {}).get("status") == "merged", 180, "Eridani to report the merge",
+              interval=3)
+        assert json.loads(gh("pr", "view", str(number), "-R", slug, "--json", "state"))["state"] == "MERGED"
+        final = until(lambda: (r := owner.run(run_id))["state"] in ("completed", "needs_you", "awaiting_approval") and r, 180,
+                      "the run to settle after the merge", interval=3)
+        if final["state"] != "completed":
+            owner.post(f"/remotea/runs/{run_id}/approve", {"expected_revision": final["state_revision"]})
+            until(lambda: owner.run(run_id)["state"] == "completed", 120, "the run to complete", interval=2)
+        return {"run": run_id, "pr": f"https://github.com/{slug}/pull/{number}", "ready_s": round(ready_s),
+                "finished_s": round(time.monotonic() - started), "after_merge": where(final)}
+    finally:
+        # Leave no open pull request or branch behind on GitHub, whatever happened.
+        branch = branch or (owner.run(run_id).get("branch") if run_id else None)
+        if branch:
+            for row in json.loads(gh("pr", "list", "-R", slug, "--head", branch, "--state", "open", "--json", "number")):
+                subprocess.run(["gh", "pr", "close", str(row["number"]), "-R", slug], capture_output=True, check=False)
+            subprocess.run(["gh", "api", "-X", "DELETE", f"repos/{slug}/git/refs/heads/{branch}"], capture_output=True, check=False)
+
+
+SCENARIOS = {"auto": auto, "brainstorm": brainstorm, "pr": pull_request}
 
 
 def main():
-    wanted = [a for a in sys.argv[1:] if a in SCENARIOS] or list(SCENARIOS)
+    github = os.environ.get("SANDBOX_GITHUB_REPO", "")
+    wanted = [a for a in sys.argv[1:] if a in SCENARIOS] or [name for name in SCENARIOS if name != "pr" or github]
+    if "pr" in wanted:
+        if not github:
+            raise SystemExit("The pr scenario needs SANDBOX_GITHUB_REPO=<owner>/<throwaway repository>.")
+        if wanted != ["pr"]:
+            raise SystemExit("Run the pr scenario by itself: its host works in a clone of the GitHub repository.")
+        # The agent and the host read GitHub with the token this machine's gh already holds; it is never stored.
+        os.environ["GH_TOKEN"] = os.environ.get("GH_TOKEN") or gh("auth", "token").strip()
     origin, token = settings()
     problem = missing() or access_token()[1] or (None if shutil.which("claude") else "claude is not on PATH")
     if problem:
@@ -188,7 +265,9 @@ def main():
     try:
         owner.post("/remotea/enable")
         keys = owner.post("/remotea/setup-code")  # A fresh link key and MCP key for this run's throwaway host.
-        host = RealAgentHost(remotea_checkout(), tmp, origin.replace("https://", "wss://") + LINK_PATH, keys["token"])
+        link = origin.replace("https://", "wss://") + LINK_PATH
+        host = (GitHubAgentHost(remotea_checkout(), tmp, link, keys["token"], github) if wanted == ["pr"]
+                else RealAgentHost(remotea_checkout(), tmp, link, keys["token"]))
         host.configure_mcp(keys["setup_code"], origin)
         host.start()
         connected = until(lambda: [h for h in owner.get("/remotea/status")["hosts"] if h["connected"]], 60,
@@ -211,8 +290,12 @@ def main():
             owner.call("PUT", "/remotea/auto-start", {"enabled": False, "targets": [], "daily_cap": 5, "host_cap": 2,
                                                       "harness": "claude"})
             active = owner.get("/remotea/runs?active=true")
-            for row in (active.get("items", active) if isinstance(active, dict) else active):
-                owner.post(f"/remotea/runs/{row['id']}/stop", {"mode": "kill"})
+            stopping = [row["id"] for row in (active.get("items", active) if isinstance(active, dict) else active)]
+            for run_id in stopping:
+                owner.post(f"/remotea/runs/{run_id}/stop", {"mode": "kill"})
+            if host is not None and stopping:
+                # The host has to confirm each stop; once it is gone a run would sit in "stopping" for good.
+                until(lambda: all(owner.run(i)["state"] in SETTLED for i in stopping), 60, "the stops to be confirmed", interval=2)
         except Exception as exc:  # noqa: BLE001 - cleanup must not hide the result
             print(f"cleanup: {exc}")
         if host is not None:

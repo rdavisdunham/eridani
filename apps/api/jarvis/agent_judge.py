@@ -39,7 +39,7 @@ from .domain import DomainError
 from .models import Job, now
 from .session_models import AgentAttempt, AgentHost, AgentRun, AgentSession, AgentTurn
 
-PROMPT_VERSION = "judge-v7"
+PROMPT_VERSION = "judge-v8"
 POLICIES = ("code_ready", "pr_open", "pr_merged")
 RETRIES = 2
 TURN_CHARS = 24_000
@@ -65,6 +65,11 @@ SYSTEM = (
     "`direction`, when present, is context and never evidence that work was done: the agent's brief before it "
     "started and the owner's answer to it. When the changes plainly go against the owner's answer, say so in the "
     "reason. "
+    "`completion.pr_fresh` and `completion.merged_fresh` say whether the host's record was reported after this turn "
+    "(`completion.as_of`). When one is false, that part of the record is older than the turn: it does not show that "
+    "a commit, a push or a pull request is missing, so never send the agent back for it and never answer needs_you "
+    "because of it. Judge whether the work is committed from `changes` (`uncommitted` false), and leave pushing and "
+    "the pull request to the completion policy, which Eridani checks against a fresh record after your verdict. "
     "For each criterion give status met only when that evidence shows it; point to it. A criterion the evidence "
     "cannot show either way is unclear. When `verify.infra` is true the verification could not run on the host "
     "(`verify.category`, `verify.action`): it says nothing about the code, so never blame the code for it. "
@@ -483,6 +488,48 @@ def completion_evidence(db, run, plan, since=None):
     return out
 
 
+RECORD_WAIT = 20.0  # Seconds a judge attempt waits for the host's record of the turn's commits and pull request.
+
+
+def record_behind(db, attempt) -> bool:
+    """Does the host's last worktrees report predate the turn being judged? Then it says nothing about what the agent
+    committed or pushed in that turn: read as evidence, it makes finished work look not started."""
+    run = db.get(AgentRun, attempt.run_id)
+    host = db.get(AgentHost, run.host_id) if run and run.host_id else None
+    if host is None or not run.branch:
+        return False
+    turn = db.scalar(select(AgentTurn).where(AgentTurn.run_id == run.id, AgentTurn.generation == attempt.generation,
+                                             AgentTurn.role == "assistant").order_by(AgentTurn.created_at.desc()).limit(1))
+    since = turn.created_at if turn else attempt.created_at
+    at = stamp(((host.caps or {}).get("worktrees") or {}).get("at"))
+    return at is None or at < since
+
+
+def fresh_record(attempt_id, timeout=RECORD_WAIT, step=1.0, sleep=time.sleep):
+    """Before a judge attempt reads its evidence: when the host's report of the branch is older than the turn, ask
+    for a new one (`worktrees.scan`, once per attempt) and give it up to `timeout` seconds. Returns seconds waited.
+    An older host that cannot scan on request, or one that does not answer in time, is judged on what there is: the
+    evidence still says how old the record is (`completion.as_of`)."""
+    with session_scope() as db:
+        attempt = db.get(AgentAttempt, attempt_id, with_for_update=True)
+        if attempt is None or attempt.status not in ("queued", "running") or (attempt.result or {}).get("held") \
+                or (attempt.result or {}).get("record_scan") or not record_behind(db, attempt):
+            return 0.0
+        op = coordinator.request_scan(db, attempt)
+        attempt.result = {**(attempt.result or {}), "record_scan": op or "unsupported"}
+        if op is None:
+            return 0.0
+    waited = 0.0
+    while waited < timeout:
+        sleep(step)
+        waited += step
+        with session_scope() as db:
+            attempt = db.get(AgentAttempt, attempt_id)
+            if attempt is None or not record_behind(db, attempt):
+                break
+    return waited
+
+
 def process(job_id, model=None):
     """Worker job. `model` replaces the Luna call in tests.
 
@@ -495,6 +542,7 @@ def process(job_id, model=None):
             waiting = job.payload.get("attempt") if job and job.status not in {"succeeded", "cancelled", "failed"} else None
         if waiting:
             run_changes.wait(waiting)  # The run's changes may still be on their way from the host (run_changes.py).
+            fresh_record(waiting)  # And its record of commits and pull requests may predate the turn.
     with session_scope() as db:
         job = db.get(Job, job_id)
         if not job or job.status in {"succeeded", "cancelled", "failed"}:

@@ -134,6 +134,8 @@ def verify_evidence(attempt, judge):
         (judge.generation, judge.turn_seq, judge.plan_revision) and not result.get("stale_workspace")
     category = result.get("category")
     return {"verify_id": attempt.verify_id, "status": attempt.status, "fresh": fresh,
+            # The worktree was different before or after the check than the turn left it (the host's fingerprints).
+            "stale_workspace": bool(result.get("stale_workspace")),
             "exit_code": result.get("exit_code"), "tail": (result.get("tail") or "")[-TAIL_CHARS:],
             "timed_out": bool(result.get("timed_out")), "detail": result.get("detail", ""),
             # Why it did not pass (run_coordinator.classify_verify). infra: the check could not run on the host, so it
@@ -228,6 +230,9 @@ def assess(evidence, model):
             # Missing, refused, timed out, stale or uncertain: the agent cannot fix that by trying again.
             state = "missing" if verify is None else ("stale" if not verify["fresh"] else verify["status"])
             verdict, gap = "needs_you", f"Verification {required} could not establish the result ({state})."
+            if verify is not None and verify.get("stale_workspace") and verify["status"] == "passed":
+                # The commonest cause by far: the check itself writes files git does not ignore.
+                gap = STALE_WORKSPACE_GAP.format(required=required)
     if verdict == "not_met" and not required and VERIFY_GAP.search(gap or ""):
         # The gap asks for a recorded verification on a plan that has no verify command: nothing the agent does in
         # this worktree can produce one (run 75661a23 looped six turns on it). Only the operator can set one.
@@ -494,6 +499,11 @@ def completion_evidence(db, run, plan, since=None):
     return out
 
 
+STALE_WORKSPACE_GAP = (
+    "Verification {required} passed, but the worktree changed while it ran, so the result is not tied to the code it "
+    "tested. This usually means the check writes files git does not ignore (for example __pycache__, a cache folder "
+    "or coverage output): add them to the repository's .gitignore, then verify again. If nothing like that applies, "
+    "something else changed the worktree during the check.")
 RECORD_WAIT = 20.0  # Seconds a judge attempt waits for the host's record of the turn's commits and pull request.
 
 

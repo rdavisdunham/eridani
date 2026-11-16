@@ -80,3 +80,21 @@ def test_the_judge_is_told_untracked_leftovers_are_not_uncommitted_work():
     """The second cause the same smoke test found: the verify command left `__pycache__` in the worktree, the host
     called the worktree uncommitted, and the judge sent committed work back."""
     assert "`__pycache__`" in judge.SYSTEM and "treat the work as committed" in judge.SYSTEM
+
+
+def test_a_check_that_dirties_the_worktree_says_so_instead_of_just_stale():
+    """Third finding of the same smoke test: the verify command wrote `__pycache__`, the host called its own result
+    stale, and the run stopped with "could not establish the result (stale)"."""
+    criteria = [{"id": "c1", "text": "the tests pass", "kind": "verify", "verify_id": "tests"}]
+    verify = {"verify_id": "tests", "status": "passed", "fresh": False, "stale_workspace": True, "exit_code": 0, "tail": "1 passed",
+              "timed_out": False, "detail": "", "category": None, "infra": False, "action": ""}
+    evidence = {"plan": {"criteria": criteria, "steps": [], "verify": {"verify_id": "tests"}}, "verify": verify, "ci": None,
+                "completion": {"policy": "code_ready"}, "criteria_record": []}
+    met = judge.Verdict(verdict="met", gap="", summary="done", steps=[],
+                        criteria=[judge.CriterionVerdict(id="c1", status="met", evidence="the verify attempt")])
+    out = judge.assess(evidence, lambda _: met)
+    assert out["verdict"] == "needs_you" and "required_verify_not_passing" in out["rules"]
+    assert ".gitignore" in out["gap"] and "__pycache__" in out["gap"]
+    # A result that is stale for another reason (an older turn's) keeps the plain message.
+    older = judge.assess({**evidence, "verify": {**verify, "stale_workspace": False}}, lambda _: met)
+    assert older["gap"] == "Verification tests could not establish the result (stale)."

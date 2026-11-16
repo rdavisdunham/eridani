@@ -1077,6 +1077,29 @@ def stop_run(db, owner, run_id, body, *, actor):
     return public_run(db, run)
 
 
+def close_unconfirmed_stop(db, owner, run_id, body, *, actor):
+    """Close a run whose stop the host never confirmed, because the computer is offline and may not come back.
+
+    Stop is desired state and settles only when the host confirms the agent is gone (run_coordinator.request_stop):
+    that is the honest record while the computer can still answer. A computer that was retired or re-paired never
+    answers, and the run would sit in `stopping` for good, holding its task. This is the owner saying so. The record
+    keeps the difference: reason `stop_unconfirmed_closed`, and a history entry that the stop was not confirmed.
+    Refused while the host is connected (Force stop is the tool then). If the computer does come back, its
+    leftover session is cleaned up like any settled run's (agent_cleanup)."""
+    run = coordinator.load(db, owner, run_id)
+    coordinator.check_revision(run, body.expected_revision)
+    if run.state != "stopping":
+        raise DomainError("INVALID_STATE", "Only a run that is stopping can be closed this way.", 409)
+    host = db.get(AgentHost, run.host_id) if run.host_id else None
+    if host is not None and agent_link.connected(host):
+        raise DomainError("HOST_ONLINE", "This computer is connected: use Force stop, and the run closes when it confirms.", 409)
+    coordinator.note(run, "stop_unconfirmed_closed", actor=actor.record(), host=host.name if host else None)
+    run.stop_reason = "stop_unconfirmed_closed"
+    coordinator.finish(db, run, detail="Closed by the owner without the computer confirming that the agent stopped.")
+    emit(db, owner, "agent.changed", run.id, run.state_revision)
+    return public_run(db, run, detail=True)
+
+
 def approve(db, owner, run_id, body, *, actor):
     """Accept the work, deferring completion when manual verification still needs PR delivery."""
     run = coordinator.load(db, owner, run_id)
@@ -1200,7 +1223,8 @@ def answer_question(db, owner, question_id, body, *, actor):
 REASON_TEXT = {**coordinator.REASONS, "stopped_by_user": "Stopped from Eridani.",
                "task_completed_externally": "The task was completed outside the run.",
                "approved": "Approved.", "stop_refused": "The host refused the stop; try Stop again.",
-               "stop_unconfirmed": "The stop is not confirmed yet.", "started": "", "start": ""}
+               "stop_unconfirmed": "The stop is not confirmed yet.",
+               "stop_unconfirmed_closed": "Closed without the computer confirming that the agent stopped.", "started": "", "start": ""}
 
 
 def public_question(q):

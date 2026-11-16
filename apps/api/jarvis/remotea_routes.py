@@ -523,6 +523,16 @@ def stop(identity: UUID, body: control.StopInput, user: User):
             db, user.owner_id, str(identity), body, actor=actor_for(user)))
 
 
+@router.post("/runs/{identity}/stop/close")
+def close_unconfirmed_stop(identity: UUID, body: control.BrainstormPlanInput, user: User):
+    """Close a stopping run whose computer is offline and never confirmed the stop (owner only; like stop, it works
+    while remotea is being turned off)."""
+    with session_scope() as db:
+        owner_only(db, user)
+        return receipts.once(db, user.owner_id, str(identity), "stop_close", body, lambda: control.close_unconfirmed_stop(
+            db, user.owner_id, str(identity), body, actor=actor_for(user)))
+
+
 @router.post("/runs/{identity}/focus")
 def focus(identity: UUID, user: User):
     """Open the run's terminal in remotea: ask the host's desktop app(s) to bring the run's tab to the front

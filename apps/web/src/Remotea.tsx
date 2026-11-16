@@ -34,7 +34,7 @@ import { focusTarget } from "./run-restart";
 import { anchoredScrollTop, earlierLine, mergeDetail, nextOffset, scrollAnchor, type FullTurn } from "./remotea-model";
 import { focusSentText, reopenButton, terminalFallback, type FocusResult } from "./remotea-model";
 import { APPROVAL_FACTS, ciCard, freshnessFacts, mergePanel, type Fact } from "./remotea-model";
-import { actorChip, brainstormSaid, hostBusyText, modelLabel, planApprovalBody, PLAN_STOPS, reviewFindings, reviewTitle, type PlanReviewRow } from "./remotea-model";
+import { actorChip, brainstormSaid, canCloseUnconfirmedStop, CLOSE_UNCONFIRMED_STOP, hostBusyText, modelLabel, planApprovalBody, PLAN_STOPS, reviewFindings, reviewTitle, type PlanReviewRow } from "./remotea-model";
 import { dismissQuestion, looseSessions, originLabel, sessionTargets, unmergedWithRuns, type AdvertisedTarget, type SavedTarget, type SessionTarget } from "./remotea-model";
 import { Dialog } from "./ux";
 
@@ -920,6 +920,14 @@ export function RunDrawer({ id, onClose, preloaded }: {
     catch (error) { if (isRevisionConflict(error)) changed(); else setError(message(error)); }
     finally { setBusy(""); }
   };
+  // A stop the offline computer never confirmed: the owner closes the run's record, and is told what that means first.
+  const closeUnconfirmed = async () => {
+    if (!run || !bound || !window.confirm(CLOSE_UNCONFIRMED_STOP)) return;
+    setBusy("close"); setError("");
+    try { await postAction(`/remotea/runs/${run.id}/stop/close`, { expected_revision: run.state_revision }); refresh(); }
+    catch (error) { if (isRevisionConflict(error)) changed(); else setError(message(error)); }
+    finally { setBusy(""); }
+  };
   // Reopen terminal (run.reopen): pending until the host answers; the focus answer it replaces is cleared.
   const reopenTerminal = async () => { setFocus(null); await lifecycle("reopen"); };
   const sendMessage = async () => {
@@ -1169,6 +1177,8 @@ export function RunDrawer({ id, onClose, preloaded }: {
         {!isSettled(run) && run.automation?.held && <button className="btn btn-sm" disabled={off || !!run.automation.releasing} onClick={() => void resumeAutomation()}>Resume automation</button>}
         {!isSettled(run) && <><span className="remotea-control-gap"/>
           <button className="btn btn-sm btn-ghost" disabled={off || run.state === "stopping" || !!run.pause_reason} onClick={() => void lifecycle(run.paused ? "resume" : "pause")}>{run.paused ? "Resume" : "Pause"}</button>
+          {canCloseUnconfirmedStop(run) && <button className="btn btn-sm" disabled={!!busy || !bound} title="The computer is offline, so the stop cannot be confirmed"
+            onClick={() => void closeUnconfirmed()}>{busy === "close" ? "Closing…" : "Close run anyway"}</button>}
           <button className="btn btn-sm btn-danger" disabled={!!busy || !bound || run.state === "stopping" || (run.controller === "terminal" && !run.terminal_exited)} onClick={() => void lifecycle("cancel")}><Square size={14}/>Cancel run</button></>}
       </div>
       {chatOpen && !isSettled(run) && <div className="run-direct-composer">

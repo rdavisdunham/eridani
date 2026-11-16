@@ -649,6 +649,38 @@ class RealAgentHost(RemoteaHost):
         return rows
 
 
+class GitHubAgentHost(RealAgentHost):
+    """A real agent whose repository is a clone of a GitHub repository, so a run can push, open a pull request, have
+    real CI read and be merged. `slug` is owner/name; the caller's GH_TOKEN must reach it.
+
+    The token is never written down: the clone's credential helper and the agent's `gh` both read GH_TOKEN from the
+    environment of the remotea server this host starts."""
+
+    HELPER = '!f() { echo username=x-access-token; echo "password=$GH_TOKEN"; }; f'
+
+    def __init__(self, checkout, tmp, link_url, link_key, slug):
+        super().__init__(checkout, tmp, link_url, link_key)
+        assert os.environ.get("GH_TOKEN"), "GH_TOKEN is not set"
+        self.slug = slug
+        git(self.repo, "config", "credential.helper", self.HELPER)
+        git(self.repo, "remote", "set-url", "origin", f"https://github.com/{slug}.git")
+        git(self.repo, "fetch", "-q", "--prune", "origin")
+        git(self.repo, "checkout", "-q", "-B", "main", "origin/main")
+        config = json.loads((self.config / "eridani.json").read_text())
+        config["targets"][0]["verify"] = [{"id": self.VERIFY_ID, "argv": ["python3", "-c", "import greeting; print('1 passed in 0.01s')"],
+                                           "timeout": 60}]
+        # As on a real host: the collector reads the session's transcript, which is where pull request links come from.
+        config["collector"] = "authoritative"
+        self.write("eridani.json", config)
+        # The agent commits and pushes from the scratch home: an identity, and the same token-from-environment helper.
+        (self.home / ".gitconfig").write_text(
+            "[user]\n\tname = Eridani sandbox agent\n\temail = eridani-sandbox@users.noreply.github.com\n"
+            f"[credential]\n\thelper = {json.dumps(self.HELPER)}\n")
+
+    def env(self):
+        return {**super().env(), "GH_TOKEN": os.environ["GH_TOKEN"], "GH_PROMPT_DISABLED": "1"}
+
+
 # ---------------------------------------------------------------- wire fixtures: keys and types
 
 

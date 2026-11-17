@@ -2066,6 +2066,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/remotea/planner-model",
+      "handler": "set_planner_model",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/remotea/questions/{identity}/answer",
       "handler": "answer",
       "source": "apps/api/jarvis/remotea_routes.py",

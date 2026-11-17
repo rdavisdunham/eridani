@@ -922,6 +922,35 @@ Direction is where a better model and real research pay, so a planner gets both 
   tracker; generate from six angles before judging; every idea carries a basis the owner can check.
 - Codex planners get the skill pointer but no added research tools yet (its read-only sandbox is unchanged).
 
+## Choosing the planning model, and when the agent itself fails
+
+**Who picks the model.** A model named for a run always wins (the Run dialog, the ideas dialog, Dani's
+`control_start` with `model`). When none is named, the owner setting `remotea_planner_model` decides what plans
+(Settings, "Planning model"; `POST /remotea/planner-model`):
+
+- `strongest` (the default): the newest Fable the computer offers;
+- `host`: the computer's own default;
+- a model's id: that model where the computer offers it, otherwise the strongest.
+
+By voice, Dani's start proposal names the model that will plan (`planner` in the result, and the summary the
+owner confirms) and she asks whether they want another; naming one makes a new proposal that replaces the first.
+
+**When the agent's own session fails** (`run_trouble.py`; remotea cap `trouble.reported`). remotea reports what the
+harness said: `rate_limited` (usage ran out, or the provider is refusing for now), `auth_expired` (signed out on
+that computer) or `errored` (anything else). Eridani then:
+
+1. **Carries on under another model when that fixes it.** A run whose model ran out of usage, or is not available
+   to the account, moves the same session to the computer's default model and tells the agent to continue (`input`
+   with `model`; remotea cap `input.model`). The conversation is kept. Once per run, only for managed sessions, and
+   only when the default is a different model. The owner is notified and the run shows `model_fallback`
+   (from, to, why). So a Fable limit does not stop a brainstorm or a plan.
+2. **Otherwise stops for the owner with the reason**: `needs_you(rate_limited | auth_expired | agent_errored)`,
+   carrying the harness's own words (a usage limit says when it resets). The app lists these under repairs.
+   A message to the agent resumes the run, and the trouble clears when the session works again.
+
+Verification and judging that the failed turn queued are superseded, so a failed turn is never judged as work.
+Codex sessions do not report failures yet.
+
 ## Brainstorm and ideas through Dani
 
 Dani carries the same conversations by voice or typed chat (`control.*`, so both use one tool list). The conversation

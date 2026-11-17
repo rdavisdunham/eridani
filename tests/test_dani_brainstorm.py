@@ -153,3 +153,21 @@ def test_a_reply_sent_through_dani_comes_back_with_the_agents_answer(host, monke
     out = asyncio.run(talk())
     assert commands(run_id, "input")[-1].payload["text"] == "Warm."
     assert out["data"]["conversation"]["agent_said"] == "Then one warm line. Plan it?", out["data"].get("conversation")
+
+
+def test_a_start_proposal_names_the_planning_model_and_another_can_be_asked_for(host):
+    from test_planning_depth import offers
+
+    offers(host, managed=True)
+    made = task("Rework uploads", success_criteria=[{"text": "Done"}])
+    default_target(host, made["id"])
+    first = say("control.start", task_id=made["id"])
+    assert "claude-fable-5-2 planning" in first["summary"]
+    assert first["planner"]["model"] == "claude-fable-5-2" and first["planner"]["chosen_by"] == "default"
+    assert "claude-opus-5-5" in [m["model"] for m in first["planner"]["others"]] and "another" in first["planner"]["say"]
+    # The owner names another: the new proposal replaces the first, and their yes starts it on that model.
+    second = say("control.start", task_id=made["id"], model="claude-opus-5-5")
+    assert "claude-opus-5-5 planning" in second["summary"] and second["planner"]["say"] is None
+    run_id = confirm(second)["id"]
+    with session_scope() as db:
+        assert db.get(AgentRun, run_id).model == "claude-opus-5-5"

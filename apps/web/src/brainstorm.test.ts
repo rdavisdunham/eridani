@@ -47,3 +47,20 @@ describe("planning depth: which model plans", () => {
     expect(plannerDefaultLabel([], "claude")).toBe("Model default");
   });
 });
+
+describe("model choice: the planning model setting and a run that changed model", () => {
+  it("offers the two rules, then each offered model once, and keeps a saved model that is not offered now", async () => {
+    const { plannerChoices } = await import("./PlannerModelSetting");
+    const option = (model: string, host_id: string, label?: string) => ({ host_id, harness: "claude", model, label, efforts: [], permission_profiles: [] });
+    const choices = plannerChoices([option("claude-fable-5-2", "a", "Fable 5.2"), option("claude-fable-5-2", "b"), option("sonnet", "a")], "old-model");
+    expect(choices.map(c => c.value)).toEqual(["strongest", "host", "claude-fable-5-2", "sonnet", "old-model"]);
+    expect(choices[2].label).toBe("Fable 5.2");
+    expect(choices[4].label).toBe("old-model (not offered now)");
+  });
+  it("says in one line that a run changed model and why", async () => {
+    const { modelFallbackLine } = await import("./remotea-model");
+    expect(modelFallbackLine({ model_fallback: null })).toBeNull();
+    expect(modelFallbackLine({ model_fallback: { from: "claude-fable-5-2", to: "claude-opus-5-5", why: "its usage ran out" } }))
+      .toBe("Changed model: claude-fable-5-2 could not go on (its usage ran out), so this run carries on under claude-opus-5-5.");
+  });
+});

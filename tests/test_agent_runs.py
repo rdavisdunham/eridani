@@ -440,7 +440,7 @@ def test_a_stalled_agent_needs_you_and_heals_when_it_moves_again(host):
     assert state(run_id) == ("needs_you", "stalled")
     status()  # Output again: the run carries on by itself.
     assert state(run_id) == ("executing", "surface_restored")
-    status(trouble={"kind": "rate_limited"})  # A kind this version does not act on is ignored.
+    status(trouble={"kind": "something_new"})  # A kind this version does not know is ignored.
     assert state(run_id) == ("executing", "surface_restored")
 
 

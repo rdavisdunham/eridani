@@ -596,6 +596,7 @@ own short transaction.
 | up | `question` | `op_id, digest, surf, incarnation, run_id?, generation, provider, provider_session_id, provider_request_id, provider_turn_id?, items[], hold_until?` | a structured question the agent asked; stored once per `(session, provider_request_id)` |
 | up | `question.resolved` | `op_id, digest, question_id\|provider_request_id, status: accepted\|answered_locally\|timed_out\|canceled\|failed, still_open?, remote_answerable?` | the host's word on a question; only `accepted` confirms an answer sent from here |
 | up | `context.request` | `req_id, text, run_token?` | ephemeral, no ack: answered with `context.response {req_id, text}` |
+| up | `lookup.request` | `req_id, what (runs\|run\|tasks\|needs_you), run_id?, active?, query?, status? (open\|done\|all), limit? (1-25)` | cap `lookup`; ephemeral, no ack: answered with `lookup.response {req_id, ok, data?, error?}`. Read-only, for the host's assistant (`link_lookup.py`; see "Lookups for the host's assistant") |
 | up | `worktrees.report` | `op_id, digest, worktrees: [{target, path, branch, base, base_ref?, ahead, behind, unpushed, uncommitted, untracked, merged, merged_reason?, active, reasons}], heads?: [{target, dir, ref, head}]` | replaces the host's last report; feeds **Unmerged work**, the run header's live "N behind" and the migration counter (0033). `merged` is null with `merged_reason: "no commits of its own yet"` for a branch with no commits of its own; Eridani reads null (and a branch missing from the report) as unknown, never merged. Stored with the time it arrived (`caps.worktrees.at`), which the judge compares with the turn |
 | up | `doctor` | `op_id, digest, at, ok, warn, fail, items: [{id, level: warn\|fail, summary, fix?}], truncated?` | `remotea doctor`'s summary (remotea S-Q1): the counts cover every check, `items` only the warn and fail lines (≤ 40, `id` ≤ 120 and `summary`/`fix` ≤ 200 characters). Sent only when Eridani's `welcome` caps include `doctor` (Eridani advertises it) and only when the findings changed. Eridani keeps the newest per host in `agent_hosts.caps.doctor` (`at` as ISO-8601) with `caps.doctor_at` (when it arrived; no migration); an older `at` never replaces a newer one (`{stored:false, reason:"older"}`). Validated like the hello field (`agent_link.doctor_summary`): bad counts or `at` drop the whole summary (`{stored:false, reason:"malformed"}`, still `ok:true` so the host does not resend it); a malformed or oversized item is dropped alone and the summary marked `truncated`; a malformed `fix` is dropped from its item; text is redacted again. Fails first. Shown on the host (`public_host.doctor` with `received_at`, so `GET /remotea/status`), on the setup page's hosts (`GET /remotea/setup`, with `doctor_supported`) and in `control_status` (`hosts[].self_check`: "host desk: 2 setup problems: <first fail>…") |
 | down | `runs.snapshot` | `runs: [{run_id, generation, desired, stop_mode?}]` | after each reconnect's reconciliation |
@@ -622,6 +623,24 @@ transaction; each tick, `drain()` sends queued commands (and resends `sent` ones
 kind the host advertised and whose `expires_at` has not passed. Commands carry a stable `op_id` and
 payload `digest`, separate from the envelope id: a resend keeps both and gets a new envelope (F06). See
 **Runs** below.
+
+### Lookups for the host's assistant
+
+Dani on a remotea host (the assistant that was called Tea there) can see the owner's runs, tasks and Needs you list.
+It asks over the link the host already holds, so no second key is minted and nothing new is kept on the host. Both
+sides advertise `lookup`; Eridani answers `lookup.request` with `lookup.response` carrying the same `req_id`:
+
+- `runs`: the newest runs (not finished unless `active` is false; dismissed ones left out), each with its task, state,
+  the reason in words, model, branch and CI.
+- `run`: one run as the run page reads it, with its last ten turns.
+- `tasks`: tasks by title (`query`), `open` (default), `done` (completed or cancelled) or `all`, newest change first,
+  with the total.
+- `needs_you`: the Needs you list as Dani reads it aloud, with a `next` that says decisions are made in Eridani.
+
+Read-only on purpose: approving, answering, starting or stopping stays in Eridani (the app, or Dani there), so the
+host's assistant can do what any reader of the run page can. The pair is ephemeral like `context.request`: never
+acked, spooled or replayed, and the host drops a reply that comes after it gave up. An unknown run or a bad request
+answers `ok: false` with the reason.
 
 ### Adding a repository from the app
 

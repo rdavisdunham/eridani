@@ -138,9 +138,10 @@ first. Each item states the decision, the recommendation, the evidence and what 
 a "Needs you" page in the main nav with a count, one-tap Accept where a plain yes exists (finished work, a final
 plan, a start proposal) and Open for the rest. Dani reads it with the `needs_you` tool. Batch delivery: a "Needs you summary" notice at the owner's times
 (default 09:00 and 17:00, Settings → Alerts), only when something waits, recounted when it is sent and dropped if
-everything was decided; run problems that block work still alert on their own. Still to do: a summary after
-meetings (from the calendar), accepting meeting proposals and answering Questions from the list itself, and
-the single assistant name.
+everything was decided; run problems that block work still alert on their own. Between those times, the same
+notice also goes out once a meeting's proposals are ready (one notice for meetings that end together, none within
+half an hour of the last; Settings → Alerts → "Also after meetings"). Still to do: accepting meeting proposals
+and answering Questions from the list itself.
 
 ### Phase 3: widen the inputs
 

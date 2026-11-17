@@ -3,9 +3,15 @@ import {api,post} from "./api";
 import {useStructureActions} from "./structure-actions";
 import { ReviewQuestion, useMarkReviewed, type ReviewItem } from "./Reviews";
 import "./questions.css";
-type Question={key:string;kind:string;review_kind?:string;revision:number;status:string;question:string;source_id:string;definition_id?:string;deferred_until?:string;candidates?:{id?:string;content?:string;assertion_id?:string;statement?:string}[];actions?:string[];evidence?:unknown;answer_tool:string;answer_args:Record<string,unknown>;delivery?:{channel:string;state:string;updated_at:string}|null;record?:ReviewItem};
+export type Question={key:string;kind:string;review_kind?:string;revision:number;status:string;question:string;source_id:string;definition_id?:string;deferred_until?:string;candidates?:{id?:string;content?:string;assertion_id?:string;statement?:string}[];actions?:string[];evidence?:unknown;answer_tool:string;answer_args:Record<string,unknown>;delivery?:{channel:string;state:string;updated_at:string}|null;record?:ReviewItem};
 type Page={items:Question[];total:number;next_offset:number|null;counts:Record<string,number>;learning:{runs:{kind:string;id:string|null;status:string;created_at:string|null;finished_at:string|null;result:unknown}[]}};
-type Person={id:string;name:string};
+export type Person={id:string;name:string};
+/** One question with the controls that answer it, by kind; Needs you uses it to answer in place. */
+export function QuestionAnswer({q,people=[],onChanged}:{q:Question;people?:Person[];onChanged:()=>Promise<void>}){
+ const reviewed=useMarkReviewed(onChanged);
+ if(q.kind==="record_review"&&q.record)return <><ReviewQuestion q={{...q,record:q.record}} onChanged={onChanged} onMark={reviewed.mark}/>{reviewed.error&&<p role="alert">{reviewed.error} Refresh to see the current review.</p>}{reviewed.toast}</>;
+ return q.kind==="context"?<ContextQuestionCard q={q} people={people} onChanged={onChanged}/>:<QuestionCard q={q} onChanged={onChanged}/>;
+}
 export function Questions({organization=false,compact=false,refresh=0,people=[]}:{organization?:boolean;compact?:boolean;refresh?:number;people?:Person[]}){
  const [page,setPage]=useState<Page|null>(null),[status,setStatus]=useState("open"),[offset,setOffset]=useState(0),[error,setError]=useState("");
  const load=useCallback(async()=>{try{setPage(await api<Page>("/questions?category="+(organization?"organization":"all")+"&status="+status+"&offset="+offset));setError("");}catch(e){setError((e as Error).message);}},[organization,status,offset]);

@@ -5,4 +5,8 @@
 .needs-you-title{color:var(--muted)}.needs-you-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .needs-you-evidence{font-size:12px;color:var(--muted);margin:8px 0;padding-left:18px;white-space:pre-wrap}
 .needs-you-urgent{color:var(--danger,#c0392b)}
+.needs-you-inline{margin-top:12px;padding-top:12px;border-top:1px solid var(--line)}
+.needs-you-inline .question-card{border:0;padding:0;margin:0;background:none}
+.needs-you-proposal{display:flex;gap:10px;align-items:flex-start;margin:8px 0;font-size:13px}.needs-you-proposal small{display:block;color:var(--muted)}
+.needs-you-card>.question-card{margin-top:12px}
 @media(max-width:600px){.needs-you-card{padding:14px}.needs-you-card .question-actions .btn{flex:1 1 140px}}

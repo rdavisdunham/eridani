@@ -2,12 +2,15 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "./api";
 import { respondDecision } from "./RunWorkflow";
 import { useAgentRefresh } from "./remotea-refresh";
-import { acceptAction, acceptLabel, KIND_LABELS, needsYouSummary, unavailableLine, type NeedsYou, type NeedsYouItem, type NeedsYouOpen } from "./needs-you-model";
+import { acceptAction, acceptLabel, inlineLabel, KIND_LABELS, needsYouSummary, unavailableLine, type NeedsYou, type NeedsYouItem, type NeedsYouOpen } from "./needs-you-model";
+import { QuestionAnswer, type Person } from "./Questions";
+import { MeetingProposals } from "./context/MeetingProposals";
 import "./needs-you.css";
 
 /** Everything waiting for the owner, as one list (needs_you.py). Each card says the decision, the recommendation,
- * the evidence and what accepting does; Open goes to where the item is decided, Accept answers it in one tap. */
-export function NeedsYouPage({ refresh, onOpen }: { refresh: number; onOpen: (open: NeedsYouOpen) => void }) {
+ * the evidence and what accepting does; Open goes to where the item is decided, Accept answers it in one tap, and
+ * meetings and Questions open their controls in the card ("Decide here", "Answer here"). */
+export function NeedsYouPage({ refresh, onOpen, people = [] }: { refresh: number; onOpen: (open: NeedsYouOpen) => void; people?: Person[] }) {
   const [value, setValue] = useState<NeedsYou | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(() => {
@@ -28,15 +31,16 @@ export function NeedsYouPage({ refresh, onOpen }: { refresh: number; onOpen: (op
     <p className="needs-you-summary">{needsYouSummary(value)}</p>
     {missing && <p className="footnote" role="note">{missing}</p>}
     {error && <p role="alert" className="work-error">{error}</p>}
-    {value.items.map(item => <NeedsYouCard key={item.key} item={item} onOpen={onOpen} onDone={load}/>)}
+    {value.items.map(item => <NeedsYouCard key={item.key} item={item} people={people} onOpen={onOpen} onDone={load}/>)}
     {value.total > value.items.length && <p className="footnote">Showing the first {value.items.length} of {value.total}.</p>}
   </section>;
 }
 
-function NeedsYouCard({ item, onOpen, onDone }: { item: NeedsYouItem; onOpen: (open: NeedsYouOpen) => void; onDone: () => void }) {
+function NeedsYouCard({ item, people, onOpen, onDone }: { item: NeedsYouItem; people: Person[]; onOpen: (open: NeedsYouOpen) => void; onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const label = acceptLabel(item), action = acceptAction(item);
+  const [inline, setInline] = useState(false);
+  const label = acceptLabel(item), action = acceptAction(item), here = inlineLabel(item);
   const accept = async () => {
     if (!item.accept || !action) return;
     setBusy(true); setError("");
@@ -54,8 +58,12 @@ function NeedsYouCard({ item, onOpen, onDone }: { item: NeedsYouItem; onOpen: (o
     {item.if_accepted && <p className="footnote"><strong>If you accept:</strong> {item.if_accepted}</p>}
     <div className="question-actions">
       {label && <button className="btn btn-primary btn-sm" disabled={busy} onClick={() => void accept()}>{label}</button>}
-      {item.open && <button className={label ? "btn btn-ghost btn-sm" : "btn btn-primary btn-sm"} onClick={() => onOpen(item.open!)}>Open</button>}
+      {here && <button className={label ? "btn btn-sm" : "btn btn-primary btn-sm"} aria-expanded={inline} onClick={() => setInline(v => !v)}>{inline ? "Hide" : here}</button>}
+      {item.open && <button className={label || here ? "btn btn-ghost btn-sm" : "btn btn-primary btn-sm"} onClick={() => onOpen(item.open!)}>Open</button>}
     </div>
+    {inline && item.kind === "meeting" && item.source_id && <MeetingProposals sourceId={item.source_id} onSettled={onDone}
+      onOpen={() => item.open && onOpen(item.open)}/>}
+    {inline && item.kind === "question" && item.question && <QuestionAnswer q={item.question} people={people} onChanged={async () => onDone()}/>}
     {error && <p role="alert" className="work-error">{error}</p>}
   </article>;
 }

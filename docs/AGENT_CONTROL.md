@@ -918,6 +918,8 @@ the same queued message, and each side reads the same state. The owner can chang
 - **Plan it.** `control_plan_it` is `run_brainstorm.plan_it`. The plan then arrives at `plan_approval`, which Dani
   already reads out and settles with `control_plan_review`.
 - **Ideas.** `control_ideas_tasks {numbers}` makes tasks from the ideas the owner names by number.
+- The conversation tools sit in their own tool group, `agent_talks` (a group holds fewer than ten tools), which the
+  `agents` group's description points to.
 - Starting an ideas session is not a Dani tool yet (it needs a repository chosen by name); it starts from the
   remotea page.
 

@@ -126,7 +126,7 @@ def test_ideas_are_numbered_for_dani_and_the_owner_picks_by_number(host, monkeyp
 
 def test_the_new_tools_are_registered_described_grouped_and_gated():
     for name in ("control_plan_it", "control_ideas_tasks"):
-        assert name in CONTROL_TOOLS and name in DESCRIPTIONS and name in GROUPS["agents"][1]
+        assert name in CONTROL_TOOLS and name in DESCRIPTIONS and name in GROUPS["agent_talks"][1]
         assert name in {d["name"] for d in registry()}
     start = next(d for d in registry() if d["name"] == "control_start")
     assert "brainstorm" in start["parameters"]["properties"] and "brainstorm true" in DESCRIPTIONS["control_start"]

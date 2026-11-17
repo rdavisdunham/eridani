@@ -254,6 +254,32 @@ def set_auto_merge(body: AutoCompleteInput, user: User):
         return state(db, user)
 
 
+class RouteLabelsInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    auto_labels: list[str] = Field(max_length=20)
+    human_labels: list[str] = Field(max_length=20)
+
+
+@router.get("/route-labels")
+def get_route_labels(user: User):
+    """The labels that decide a task's route (readiness.py): which mean an agent may finish it alone, and which
+    mean it is the owner's to do. Matched against a task's tags and its Linear labels."""
+    from . import readiness
+
+    with session_scope() as db:
+        gated(db, user)
+        return readiness.public_profile(db, user.owner_id)
+
+
+@router.put("/route-labels")
+def set_route_labels(body: RouteLabelsInput, user: User):
+    from . import readiness
+
+    with session_scope() as db:
+        gated(db, user)
+        return readiness.save_profile(db, user.owner_id, body.auto_labels, body.human_labels)
+
+
 class PlannerModelInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # "strongest" (the newest Fable the computer offers), "host" (the computer's own default), or a model's id.

@@ -784,6 +784,14 @@ class VoiceDraftInput(Input):
     message: str = Field(min_length=1, max_length=12000)
 
 
+@app.get("/api/v1/needs-you")
+def needs_you_list(user: User):
+    """Everything waiting for the owner, as one list (needs_you.py)."""
+    from .needs_you import listing
+    with session_scope() as db:
+        return listing(db, user.owner_id, user.account_id or user.owner_id, user.device_id)
+
+
 @app.get("/api/v1/voice/drafts")
 def voice_drafts(user: User):
     from .work_intake import list_drafts

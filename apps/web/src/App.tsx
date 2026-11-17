@@ -81,6 +81,7 @@ import { flushSync } from "react-dom";
 import {
   ArrowUp,
   AudioLines,
+  Inbox as InboxIcon,
   Bell,
   Brain,
   CalendarDays,
@@ -108,6 +109,7 @@ import {
   X,
 } from "lucide-react";
 import { api, ApiError, command, isOutage, post, SESSION_EXPIRED, setCsrf, setDevice } from "./api";
+import type { NeedsYouOpen } from "./needs-you-model";
 import { backoff, reportUnreachable } from "./connectivity";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { startMonitoring } from "./monitoring";
@@ -200,6 +202,9 @@ const nav: { id: View; label: string; icon: typeof Sun; tab?: boolean }[] = [
 const remoteaNav = { id: "remotea" as View, label: "remotea", icon: SquareTerminal };
 // Shown only when meeting memory answers for this account (on, personal workspace).
 const meetingsNav = { id: "meetings" as View, label: "Meetings", icon: AudioLines };
+// The one "Needs you" list (needs_you.py); personal workspace only, like Questions.
+const needsNav = { id: "needs" as View, label: "Needs you", icon: InboxIcon };
+const NeedsYouPage = lazy(() => import("./NeedsYou").then((m) => ({ default: m.NeedsYouPage })));
 export default function App() {
   const editors = useEditorBridge();
   const initialRecord = useRef(readRecordLink(location.search));
@@ -416,6 +421,18 @@ export default function App() {
   // Every in-app path to a meeting review or a person page (lists, Dani, notifications) goes through these.
   function openMeeting(source: string | null) { setMeetingSource(source); setView("meetings"); }
   function openPerson(actor: string) { setPersonActor(actor); setView("person"); }
+  // Where a "Needs you" item is decided (needs_you.py `open`).
+  function openNeeded(open: NeedsYouOpen) {
+    if (open.view === "remotea") return openRemoteaRun(open.run_id ?? null);
+    if (open.view === "meetings") return openMeeting(open.source ?? null);
+    if (open.view === "activity") { setActivityFocus("attention"); setActivityOpen(true); return; }
+    if (open.view === "chat") { setCompanion(true); return; }
+    if (open.view === "setup") {
+      if (setupSession?.tree_proposal_id) void openTreeReview(setupSession.tree_proposal_id); else setCompanion(true);
+      return;
+    }
+    setView(open.view as View);
+  }
   useEffect(() => {
     setMeetingsOn(false);
     if (!boot || boot.workspace?.id) return;
@@ -551,6 +568,20 @@ export default function App() {
     deferred: 0,
   });
   const [memoryRevision, setMemoryRevision] = useState(0);
+  // The "Needs you" nav count (needs_you.py total), refreshed on the same signals the page listens to.
+  const [needsCount, setNeedsCount] = useState(0);
+  const personal = !!boot && !boot.workspace?.id;
+  useEffect(() => {
+    if (!personal) { setNeedsCount(0); return; }
+    let live = true, timer: ReturnType<typeof setTimeout> | null = null;
+    const load = () => { api<{ total: number }>("/needs-you").then(v => { if (live) setNeedsCount(v.total); }).catch(() => {}); };
+    const soon = () => { if (!timer) timer = setTimeout(() => { timer = null; load(); }, 1000); };
+    load();
+    const events = ["eri-agents-changed", "eri-context-changed", "eri-work-changed", "eri-voice-drafts-changed"];
+    events.forEach(e => window.addEventListener(e, soon));
+    const poll = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 120_000);
+    return () => { live = false; if (timer) clearTimeout(timer); window.clearInterval(poll); events.forEach(e => window.removeEventListener(e, soon)); };
+  }, [personal, memoryRevision, noteRevision]);
   const [editingMemory, setEditingMemory] = useState<Memory | null>(null);
   const mobile = useMaxWidth(COMPACT_MAX_WIDTH);
   const phone = useMaxWidth(PHONE_MAX_WIDTH);
@@ -2247,6 +2278,7 @@ export default function App() {
     remotea: "remotea",
     meetings: "Meetings",
     person: "Person",
+    needs: "Needs you",
   };
   const previousLayer = useRef({record: null as string | null, structure: false});
   useEffect(() => {
@@ -2633,9 +2665,9 @@ export default function App() {
           <span className="sr-only">{boot.workspace?.id ? "Shared workspace" : "Personal workspace"}</span>
         </a>
         <nav aria-label="Main">
-          {[...nav, ...(meetingsOn ? [meetingsNav] : []), ...(boot.preferences.remotea_enabled ? [remoteaNav] : [])].map((item) => {
+          {[nav[0], ...(boot.workspace?.id ? [] : [needsNav]), ...nav.slice(1), ...(meetingsOn ? [meetingsNav] : []), ...(boot.preferences.remotea_enabled ? [remoteaNav] : [])].map((item) => {
             const current = item.id === "today" ? dashboard : item.id === "all" ? isTaskTab(view) && !dashboard : view === item.id;
-            const count = item.id === "today" ? todayCount : item.id === "all" ? openCount : 0;
+            const count = item.id === "today" ? todayCount : item.id === "all" ? openCount : item.id === "needs" ? needsCount : 0;
             return (
               <button
                 key={item.id}
@@ -3021,6 +3053,8 @@ export default function App() {
               onOpen={setMeetingSource} onPerson={openPerson}/></Suspense>}
             {view === "person" && <Suspense fallback={<p role="status">Loading…</p>}><PersonPage actorId={personActor}
               onMeetings={() => { setMeetingSource(null); setView("meetings"); }} onMeeting={openMeeting} onPerson={openPerson}/></Suspense>}
+            {view === "needs" && (boot.workspace?.id ? <p>Switch to Personal to see what needs you.</p>
+              : <Suspense fallback={<p role="status">Loading…</p>}><NeedsYouPage refresh={memoryRevision + noteRevision} onOpen={openNeeded}/></Suspense>)}
             {view === "questions" && (boot.workspace?.id?<p>Switch to Personal to review your questions.</p>:<Questions refresh={memoryRevision+noteRevision} people={organization.actors}/>)}
             {view === "organize"&&!boot.workspace?.id&&<Questions organization compact refresh={noteRevision}/>}
             {view === "memory" && (

@@ -1881,7 +1881,9 @@ def ambiguous(db, runs, message):
 
 
 # Which runs a command without a run_id could mean (default: any unsettled run).
-PLAUSIBLE = {"control.approve": lambda r: r.state == "awaiting_approval",
+PLAUSIBLE = {"control.plan_it": lambda r: bool(((r.sync_state or {}).get("brainstorm") or {}).get("open")),
+             "control.ideas_tasks": lambda r: ((r.sync_state or {}).get("brainstorm") or {}).get("kind") == "ideate",
+             "control.approve": lambda r: r.state == "awaiting_approval",
              "control.plan_review": lambda r: r.state == "needs_you" and r.state_reason in ("plan_review", "plan_approval")}
 
 
@@ -2483,6 +2485,9 @@ def propose(db, owner, account, tool, args, actor):
             arguments.setdefault("approve_final", args.approve_final)
             extras.append(f"{HARNESS_LABELS.get(args.worker.harness, args.worker.harness)}"
                           f"{' ' + args.worker.model if args.worker.model else ''} working")
+        if args.brainstorm:
+            arguments["brainstorm"] = True
+            extras.append("talking it through with you before it plans")
         # Where it runs is settled now when it can be (the card then names it); without a target the card asks.
         target = proposed_target(db, owner, task)
         if target is not None:
@@ -2510,13 +2515,34 @@ def propose(db, owner, account, tool, args, actor):
         if via:
             return decide(db, owner, same.id, confirm=True, via=via, actor=actor)
         return {**pending_reply(same), "next": "This was already proposed and is still waiting for the owner. " + NEXT}
+    offer = None
+    if tool == "control.start":
+        # A changed start for the same task replaces the one still waiting (the owner asked to talk it through
+        # after all, or picked another agent): one card per task, and the yes is never ambiguous between them.
+        for old in db.scalars(select(AgentPendingControl).where(
+                AgentPendingControl.owner_id == owner, AgentPendingControl.account_id == account,
+                AgentPendingControl.tool == tool, AgentPendingControl.status == "pending",
+                AgentPendingControl.arguments["task_id"].astext == arguments["task_id"])):
+            old.status, old.decided_at, old.decided_via = "declined", now(), "replaced"
+        if not args.brainstorm and args.reviewer is None and unshaped(task):
+            offer = TALK_OFFER
     row = AgentPendingControl(owner_id=owner, account_id=account, work_id=work.id if work else None, tool=tool,
                               arguments=arguments, summary=summary, run_id=run_id, status="pending",
                               actor=actor.record(), decided_via="", expires_at=None)
     db.add(row)
     db.flush()
     emit(db, owner, "agent.changed", run_id or row.id)
-    return {**pending_reply(row), "next": "Nothing was sent yet. " + NEXT}
+    return {**pending_reply(row), **({"offer": offer} if offer else {}), "next": "Nothing was sent yet. " + NEXT}
+
+
+TALK_OFFER = ("This task has no success criteria and no PRD yet. When you read the summary, also offer to talk it "
+              "through with the agent first. If the owner wants that, call control_start again for the same task "
+              "with brainstorm true: it replaces this proposal, and they confirm the new one.")
+
+
+def unshaped(task) -> bool:
+    """Has nobody said yet what done means for this task? Then talking it through first is worth offering."""
+    return not task.prd_note_id and (not task.success_criteria or readiness_drafted(task))
 
 
 NEXT = ("Read the summary to the owner and ask them to confirm. They can tap Confirm on the card in chat or on the "
@@ -2607,7 +2633,7 @@ def decide(db, owner, pending_id, *, confirm, via, actor, execution_target_id=No
         result = start_run(db, owner, row.account_id or account(db, owner),
                            StartInput(task_id=args["task_id"], harness=args.get("harness", "claude"),
                                       execution_target_id=execution_target_id or args.get("execution_target_id"),
-                                      **{k: args[k] for k in ("model", "effort", "permission_profile", "reviewer", "worker", "rounds", "approve_final")
+                                      **{k: args[k] for k in ("model", "effort", "permission_profile", "reviewer", "worker", "rounds", "approve_final", "brainstorm")
                                          if k in args}),
                            actor=confirmed)
         run = coordinator.load(db, owner, result["id"])
@@ -2886,6 +2912,29 @@ def control_dispatch(db, owner, tool, args):
         return named(db, {"status": "plan_reviewed", "run_id": run.id, "task": result["task"], "state": result["state"],
                           "plan_revision": (result.get("plan") or {}).get("revision"),
                           "next": "The plan is frozen and the agent is executing against it."}, run.id)
+    if tool == "control.plan_it":
+        from . import run_brainstorm
+
+        run = coordinator.load(db, owner, run_for(db, owner, args, tool))
+        run_brainstorm.plan_it(db, run, actor=actor)
+        return named(db, {"status": "planning", "run_id": run.id, "state": run.state,
+                          "next": "The conversation is over and the agent is writing the plan from it. control_status "
+                                  "shows it under plan_approval when it arrives (usually within a minute); read it to "
+                                  "the owner then, and approve or send it back with control_plan_review."}, run.id)
+    if tool == "control.ideas_tasks":
+        from . import run_ideas
+
+        run = coordinator.load(db, owner, run_for(db, owner, args, tool))
+        items = run_ideas.state(run).get("items") or []
+        wrong = [n for n in args.numbers if n < 1 or n > len(items)]
+        if wrong:
+            raise DomainError("INVALID_ARGUMENT", f"There {'is' if len(items) == 1 else 'are'} {len(items)} idea"
+                              f"{'' if len(items) == 1 else 's'} on the list; {wrong[0]} is not one of them.")
+        made = run_ideas.make_tasks(db, owner, run.id, run_ideas.MakeTasksInput(
+            idea_ids=[items[n - 1]["id"] for n in dict.fromkeys(args.numbers)]), actor=actor)
+        return named(db, {"status": "tasks_made", "run_id": run.id, "created": made["created"],
+                          "next": "Tell the owner which tasks were made (an idea chosen before makes no second task). "
+                                  "Each is an ordinary task; offer to start one with brainstorm true to shape it."}, run.id)
     if tool == "control.stop":
         run_id = run_for(db, owner, args, tool)
         return named(db, stop_run(db, owner, run_id, StopInput(mode=args.mode), actor=actor), run_id)
@@ -2900,6 +2949,50 @@ def control_dispatch(db, owner, tool, args):
                                      AnswerInput(answers=[AnswerItem(**a.model_dump()) for a in args.answers]), actor=actor)
         return named(db, result, result.get("run_id") if isinstance(result, dict) else None)
     raise DomainError("INVALID_ARGUMENT", "That action is not available.")
+
+
+SAID_CHARS = 2500  # What Dani is given of the agent's message: enough for a ranked list, short enough to read aloud.
+
+
+def conversation(db, run, *, since_turns=None):
+    """An open brainstorm or ideas session, for Dani: what the agent last said, whose move it is, and what to do.
+
+    The conversation lives on the run, not in the chat or voice session: what the owner types on the run page and
+    what they say to Dani are the same thread, so either can pick up where the other left off."""
+    from . import run_brainstorm, run_ideas
+    from .session_models import AgentTurn
+
+    value = run_brainstorm.public(run)
+    if not value or not value["open"]:
+        return None
+    waiting = run.state == "needs_you" and run.state_reason == run_brainstorm.REASON
+    turn = db.scalar(select(AgentTurn).where(AgentTurn.run_id == run.id, AgentTurn.generation == run.generation,
+                                             AgentTurn.role == "assistant").order_by(AgentTurn.created_at.desc()).limit(1))
+    said = (turn.text or "").strip() if turn is not None else ""
+    last = next((h for h in reversed(run.history or []) if h.get("event") == "sent" and not h.get("kind")
+                 and (h.get("actor") or {}).get("kind") == "human"), None)
+    ideate = value["kind"] == "ideate"
+    out = {"kind": value["kind"], "turns": value["turns"], "waiting_for_owner": waiting,
+           "agent_said": said[-SAID_CHARS:] if waiting or since_turns is None else None,
+           "agent_said_cut": len(said) > SAID_CHARS,
+           # The owner's last reply, wherever they gave it (typed on the run page, in chat, or by voice).
+           "owner_last_said": (last or {}).get("text"),
+           "next": (IDEAS_NEXT if ideate else TALK_NEXT) if waiting else
+                   "The agent is still thinking. Tell the owner, and check again in a moment with control_status."}
+    if ideate:
+        items = run_ideas.state(run).get("items") or []
+        out["ideas"] = [{"number": n, "title": i["title"], "size": i.get("size"), "made_a_task": bool(i.get("task_id"))}
+                        for n, i in enumerate(items, 1)]
+    return out
+
+
+TALK_NEXT = ("Read agent_said to the owner in your own voice, keeping its question and any options, and without "
+             "adding advice of your own. Send their answer with control_message and this run_id (their words, "
+             "faithfully); the agent's reply comes back in the result. When they say to plan it, or that they have "
+             "heard enough, call control_plan_it. They may also carry on by typing on the run page at any time.")
+IDEAS_NEXT = ("Read the ideas to the owner by number with one line each (agent_said has the reasoning if they ask). "
+              "To steer the search, send their words with control_message and this run_id. To keep ideas, call "
+              "control_ideas_tasks with the numbers they name. They may also tick ideas on the run page.")
 
 
 def spoken_run(db, run):
@@ -2923,6 +3016,9 @@ def spoken_run(db, run):
               "interview": {k: v for k, v in public_interview(interview).items() if k in ("id", "questions")}
               if interview else None,
               "linear": {k: (v or {}).get("status") for k, v in linear.items()} or None}
+    talk = conversation(db, run)
+    if talk is not None:
+        spoken["conversation"] = talk
     if run.state == "needs_you" and run.state_reason == "verify_infra":
         # Not a failing test: the verification could not run, and the owner fixes the host.
         spoken["why"] = "host setup problem: " + (item["reason_detail"] or "the verification could not run on the host")
@@ -2953,7 +3049,7 @@ def spoken_run(db, run):
                                                "decision, not something verification established: control_approve "
                                                "completes the task on their say-so; control_message sends changes back "
                                                "instead."}
-    elif run.state == "needs_you" and run.state_reason not in ("plan_review", "plan_approval"):
+    elif run.state == "needs_you" and run.state_reason not in ("plan_review", "plan_approval", "brainstorm"):
         spoken["review_packet"] = review_packet(db, run)
     # How old each fact is (E-S6): say it before a decision ("verify passed 3 min ago …; host seen 5 s ago").
     spoken["freshness"] = freshness_text(item)

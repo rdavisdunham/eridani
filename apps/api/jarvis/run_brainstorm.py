@@ -88,6 +88,33 @@ def plan_it(db, run, *, actor):
     coordinator.say(db, run, prompts.brainstorm_plan(verify_ids(db, run)[1]), "brainstorm_plan", actor=actor)
 
 
+REPLY_WAIT = 30.0  # Seconds Dani waits for the agent's answer to a reply before saying it is still thinking.
+
+
+async def reply_after(run_id, turns, timeout=REPLY_WAIT, step=1.0):
+    """After the owner's reply went to the agent: the conversation as Dani should relay it, once the agent has
+    answered (its turn count passed `turns`) or the conversation ended; after `timeout` seconds, as it stands."""
+    import asyncio
+
+    from . import agent_control as control
+    from .db import session_scope
+    from .session_models import AgentRun
+
+    waited = 0.0
+    while True:
+        with session_scope() as db:
+            run = db.get(AgentRun, run_id)
+            value = public(run) if run is not None else None
+            if value is None or not value["open"]:
+                return {"over": True, "state": run.state if run else None, "why": run.state_reason if run else None,
+                        "next": "The conversation is over; control_status shows what the run needs now."}
+            answered = value["turns"] > turns and run.state == "needs_you" and run.state_reason == REASON
+            if answered or waited >= timeout:
+                return control.conversation(db, run, since_turns=turns)
+        await asyncio.sleep(step)
+        waited += step
+
+
 def public(run):
     value = state(run)
     if not value:

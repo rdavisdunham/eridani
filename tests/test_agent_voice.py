@@ -64,7 +64,7 @@ def default_target(host, task_id):  # noqa: F811
 
 def test_control_tools_are_registered_described_and_grouped():
     tools = {"control.start", "control.message", "control.confirm", "control.stop", "control.answer", "control.approve",
-             "control.plan_review"}
+             "control.plan_review", "control.plan_it", "control.ideas_tasks"}
     assert tools <= set(COMMANDS) and tools <= VOICE_MUTATIONS
     assert set(control.COMMANDS) == tools
     assert "control_status" in READ_TOOLS

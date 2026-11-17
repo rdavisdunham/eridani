@@ -136,8 +136,10 @@ Status (2026-11-17): the list itself is built. `GET /api/v1/needs-you` (`needs_y
 start proposals, meeting reviews, Questions, Dani's own questions, voice drafts and setup into one list, urgent
 first. Each item states the decision, the recommendation, the evidence and what accepting does. The web app has
 a "Needs you" page in the main nav with a count, one-tap Accept where a plain yes exists (finished work, a final
-plan, a start proposal) and Open for the rest. Dani reads it with the `needs_you` tool. Still to do: batch delivery
-at set times with urgent pushes, accepting meeting proposals and answering Questions from the list itself, and
+plan, a start proposal) and Open for the rest. Dani reads it with the `needs_you` tool. Batch delivery: a "Needs you summary" notice at the owner's times
+(default 09:00 and 17:00, Settings → Alerts), only when something waits, recounted when it is sent and dropped if
+everything was decided; run problems that block work still alert on their own. Still to do: a summary after
+meetings (from the calendar), accepting meeting proposals and answering Questions from the list itself, and
 the single assistant name.
 
 ### Phase 3: widen the inputs

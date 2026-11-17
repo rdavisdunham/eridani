@@ -247,3 +247,76 @@ SPOKEN_NEXT = ("Say how many things are waiting and read the urgent ones first, 
                "kind: runs with control_status then control_approve, control_answer, control_plan_review or "
                "control_message; proposals with control_confirm; questions with review_questions and the answer "
                "tool it names; Dani's own questions with work_answer. Meetings are reviewed on the Meetings page.")
+
+
+# ---------------------------------------------------------------- the summary notice
+
+
+SUMMARY = "needs_you"
+SUMMARY_WINDOW_MINUTES = 60  # A slot still goes out when the scan runs late, within this hour.
+
+
+def summary_text(value) -> tuple[str, str]:
+    """Title and body of the summary: how many wait, how many block work, and the first few decisions."""
+    total, urgent = value["total"], value["urgent"]
+    title = f"{total} {'thing needs' if total == 1 else 'things need'} you"
+    lead = [f"{i['decision']}: {i['title']}" for i in value["items"][:3]]
+    body = " · ".join([*([f"{urgent} blocking work"] if urgent else []), *lead])
+    return title, body[:1000]
+
+
+def summary(db, owner, instant=None):
+    """At each of the owner's summary times (`needs_you_times`, local), one notice when anything is waiting: the
+    batch the plan asks for, so non-urgent decisions arrive together instead of one push each. Urgent run
+    problems still notify on their own (run_coordinator.notify). Once per slot; nothing when the list is empty."""
+    from zoneinfo import ZoneInfo
+
+    from .domain import preferences
+    from .models import Notification, SharedWorkspace
+
+    instant = instant or now()
+    prefs = preferences(db, owner)
+    if not prefs.get("needs_you_summary") or db.get(SharedWorkspace, owner):
+        return None
+    local = instant.astimezone(ZoneInfo(prefs["timezone"]))
+    slot = due_slot(prefs.get("needs_you_times") or [], local)
+    if slot is None:
+        return None
+    key = f"needs_you:{owner}:{local.date().isoformat()}T{slot}"
+    if db.scalar(select(Notification.id).where(Notification.dedup_key == key)):
+        return None
+    value = listing(db, owner)
+    if not value["total"]:
+        return None
+    title, body = summary_text(value)
+    row = Notification(owner_id=owner, dedup_key=key, category=SUMMARY, title=title, body=body, importance="normal",
+                       scheduled_at=instant, eligible_at=instant, created_at=instant,
+                       target={"view": "needs", "keys": [i["key"] for i in value["items"][:50]]})
+    db.add(row)
+    db.flush()
+    return row
+
+
+def due_slot(times, local):
+    """The summary time (`HH:MM`) whose hour `local` falls in, or None."""
+    minutes = local.hour * 60 + local.minute
+    for value in sorted(set(times)):
+        try:
+            hour, minute = (int(part) for part in value.split(":"))
+        except ValueError:
+            continue
+        start = hour * 60 + minute
+        if start <= minutes < start + SUMMARY_WINDOW_MINUTES:
+            return value
+    return None
+
+
+def still_current(db, n) -> bool:
+    """Delivery check: recount the items the summary listed; drop it when all were decided, else refresh its text."""
+    listed = set((n.target or {}).get("keys") or [])
+    value = listing(db, n.owner_id)
+    left = [i for i in value["items"] if i["key"] in listed]
+    if not left:
+        return False
+    n.title, n.body = summary_text({"total": len(left), "urgent": sum(i["urgent"] for i in left), "items": left})
+    return True

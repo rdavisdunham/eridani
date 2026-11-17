@@ -9,5 +9,6 @@
   {"name": "reminder without a task", "notification": {"category": "reminder", "task_id": null, "target": {}}, "url": "/?view=notifications", "open": {"open": "notifications"}},
   {"name": "meeting ready for review", "notification": {"category": "context_ready", "task_id": null, "target": {"view": "meetings", "source_id": "3c2b1a09-3333-4d5e-9f6a-7b8c9d0e1f2a", "revisions": {"3c2b1a09-3333-4d5e-9f6a-7b8c9d0e1f2a": 1}, "proposals": {}}}, "url": "/?view=meetings&source=3c2b1a09-3333-4d5e-9f6a-7b8c9d0e1f2a", "open": {"open": "meetings", "source": "3c2b1a09-3333-4d5e-9f6a-7b8c9d0e1f2a"}},
   {"name": "context digest or earlier meetings", "notification": {"category": "context_digest", "task_id": null, "target": {"view": "meetings", "source_ids": ["3c2b1a09-3333-4d5e-9f6a-7b8c9d0e1f2a"], "proposal_ids": [], "question_keys": []}}, "url": "/?view=meetings", "open": {"open": "meetings", "source": null}},
-  {"name": "no target at all", "notification": {"category": "question", "task_id": null, "target": null}, "url": "/?view=notifications", "open": {"open": "notifications"}}
+  {"name": "no target at all", "notification": {"category": "question", "task_id": null, "target": null}, "url": "/?view=notifications", "open": {"open": "notifications"}},
+  {"name": "needs you summary", "notification": {"category": "needs_you", "task_id": null, "target": {"view": "needs", "keys": ["run:1"]}}, "url": "/?view=needs", "open": {"open": "needs"}}
 ]

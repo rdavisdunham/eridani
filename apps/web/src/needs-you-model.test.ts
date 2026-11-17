@@ -24,3 +24,13 @@ describe("needs you", () => {
     expect([acceptLabel(item({ accept: decision("control") })), acceptAction(item({ accept: decision("control") }))]).toEqual(["Confirm", "confirm"]);
   });
 });
+
+describe("needs you summary times", () => {
+  it("reads typed times as HH:MM, once each, and refuses anything else", async () => {
+    const { summaryTimes } = await import("./PlannerPreferences");
+    expect(summaryTimes("9:00, 17:30, 09:00")).toEqual(["09:00", "17:30"]);
+    expect(summaryTimes("")).toEqual([]);
+    expect(summaryTimes("25:00")).toBeNull();
+    expect(summaryTimes("noon")).toBeNull();
+  });
+});

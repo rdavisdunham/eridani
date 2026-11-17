@@ -261,6 +261,9 @@ class SettingsUpdate(Args):
     morning_hour: int | None = Field(default=None, ge=0, le=23)
     notify_min_priority: Literal["low", "normal", "high", "urgent"] | None = None
     digest_cadence: Literal["off", "hourly", "every_3_hours", "daily"] | None = None
+    # The "Needs you" summary (needs_you.summary): one notice at each of these local times when anything waits.
+    needs_you_summary: bool | None = None
+    needs_you_times: list[Annotated[str, Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")]] | None = Field(default=None, max_length=6)
 
     agent_profile: Literal["openai", "luna", "luna-none", "terra-6.1", "gemini", "groq"] | None = Field(
         default=None, description="Task agent for voice-delegated, bot and other background work.")
@@ -426,6 +429,7 @@ def preferences(db, owner):
         "morning_summary": False, "morning_hour": 8,
         # Below this priority a notice does not interrupt; it waits for the digest (notices.plan).
         "notify_min_priority": "low", "digest_cadence": "hourly",
+        "needs_you_summary": True, "needs_you_times": ["09:00", "17:00"],
         "history_days": settings.history_days,
         "timezone": settings.timezone,
         "default_reminder_hour": settings.default_reminder_hour,

@@ -9,6 +9,7 @@ export type NoticeDestination =
   | { open: "meetings"; source: string | null }
   | { open: "task"; task: string }
   | { open: "activity" }
+  | { open: "needs" }
   | { open: "today" }
   | { open: "notifications" };
 
@@ -18,6 +19,7 @@ export function noticeDestination(n: Pick<Notice, "task_id" | "target">): Notice
   if (target.view === "meetings")
     return { open: "meetings", source: (target as { source_id?: string }).source_id || null };
   if (n.task_id) return { open: "task", task: n.task_id };
+  if (target.view === "needs") return { open: "needs" };
   if (target.view === "activity") return { open: "activity" };
   if (target.view === "tasks") return { open: "today" };
   return { open: "notifications" };
@@ -26,7 +28,7 @@ export function noticeDestination(n: Pick<Notice, "task_id" | "target">): Notice
 /** What the Notifications page's Open does for each destination ("notifications": this list is already open; Today). */
 export type NoticeOpeners = {
   run: (run: string | null) => void; meetings: (source: string | null) => void; task: (task: string) => void;
-  activity: () => void; today: () => void;
+  activity: () => void; today: () => void; needs: () => void;
 };
 export function openNotice(to: NoticeDestination, open: NoticeOpeners) {
   switch (to.open) {
@@ -34,6 +36,7 @@ export function openNotice(to: NoticeDestination, open: NoticeOpeners) {
     case "meetings": return open.meetings(to.source);
     case "task": return open.task(to.task);
     case "activity": return open.activity();
+    case "needs": return open.needs();
     default: return open.today();
   }
 }

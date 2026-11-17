@@ -2946,7 +2946,7 @@ export default function App() {
                         {timeLabel(n.scheduled_at, boot.preferences.timezone)}
                       </time>
                       <div className="notice-actions">
-                        <button className="notice-primary" onClick={()=>{openNotice(noticeDestination(n),{run:openRemoteaRun,meetings:openMeeting,activity:()=>setActivityOpen(true),today:()=>setView("today"),
+                        <button className="notice-primary" onClick={()=>{openNotice(noticeDestination(n),{run:openRemoteaRun,meetings:openMeeting,activity:()=>setActivityOpen(true),today:()=>setView("today"),needs:()=>setView("needs"),
                           task:id=>{const task=tasks.find(t=>t.id===id);if(task)openTaskCard(task);else void openNoteTask(id);/* Not in the loaded list (an occurrence's own task, another tab): fetch it. */}});void mutate("notification.read",{notification_id:n.id},"");}}>Open</button>
                         {n.task_id&&["reminder","deadline"].includes(n.category??"reminder")&&<button
                           onClick={() =>

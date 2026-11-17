@@ -1,4 +1,5 @@
 import type { RunDecision } from "./RunWorkflow";
+import type { Question } from "./Questions";
 
 /** Where an item is acted on (needs_you.py `open`): a view and its parameters. */
 export type NeedsYouOpen = { view: string; run_id?: string; pending_id?: string; source?: string; work_id?: string; draft_id?: string };
@@ -9,7 +10,16 @@ export type NeedsYouItem = {
   title: string; decision: string; recommendation: string | null; evidence: string[]; if_accepted: string | null;
   open: NeedsYouOpen | null; accept: RunDecision | null; urgent: boolean; since: string | null;
   run_id?: string; pending_id?: string; source_id?: string;
+  /** A question item's whole question, answered in place with the Questions controls. */
+  question?: Question;
 };
+
+/** The button that opens an item's decision in the list itself, or null when it is only decided elsewhere. */
+export function inlineLabel(item: NeedsYouItem): string | null {
+  if (item.kind === "meeting" && item.source_id) return "Decide here";
+  if (item.kind === "question" && item.question) return "Answer here";
+  return null;
+}
 
 export type NeedsYou = { items: NeedsYouItem[]; total: number; counts: Record<string, number>; urgent: number; unavailable: string[]; at: string };
 

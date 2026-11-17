@@ -10,7 +10,9 @@ waiting item, the same four things:
 - `if_accepted`: what happens on "accept", or None when the item has no single accept (it needs an answer).
 
 and where to act: `open` (a view and its parameters, for the web app's navigation) and, for the items that can be
-accepted in one tap, `accept` (the shared decision the web app answers through `respondDecision`).
+accepted in one tap, `accept` (the shared decision the web app answers through `respondDecision`). Meetings and
+Questions are also decided in the list itself: a question item carries the whole question (`question`), and a
+meeting item its `source_id`, which the web app reads the review with.
 
 Sources, in the order they are listed (urgent first, then oldest first within each):
 
@@ -184,9 +186,10 @@ def questions(db, owner, account, device):
     from . import review_questions
 
     rows = review_questions.listing(db, owner, status="pending", limit=100)["items"]
+    # The whole question rides along so the list can answer it in place, with the same controls as Questions.
     return [item("question", f"question:{q['key']}", q.get("question") or "A question", "Answer a question",
                  open={"view": "questions"}, since=q.get("created_at"), question_key=q["key"],
-                 question_kind=q.get("kind")) for q in rows]
+                 question_kind=q.get("kind"), question=q) for q in rows]
 
 
 def work(db, owner, account, device):

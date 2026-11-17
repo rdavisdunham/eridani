@@ -42,6 +42,13 @@ def test_runs_proposals_and_questions_come_back_as_one_list_with_what_to_decide(
     assert "task is completed" in approve["if_accepted"] and approve["open"] == {"view": "remotea", "run_id": done}
     question = next(i for i in rest if i["kind"] == "question")
     assert question["title"] == "Does Client mean a company or a person?" and question["open"] == {"view": "questions"}
+    # The whole question comes along, so the list answers it in place with the same tool Questions uses.
+    asked = question["question"]
+    assert asked["key"] == question["question_key"] and asked["kind"] == "field" and asked["status"] == "pending"
+    assert asked["answer_tool"] and asked["revision"] >= 1
+    with session_scope() as db:
+        read = needs_you.spoken(db, OWNER, OWNER)
+    assert all("question" not in line for line in read["items"]), "Dani's spoken list stays one line per item"
 
 
 def test_a_failing_source_is_named_and_the_others_still_show(host, monkeypatch):

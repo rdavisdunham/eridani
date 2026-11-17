@@ -140,8 +140,12 @@ plan, a start proposal) and Open for the rest. Dani reads it with the `needs_you
 (default 09:00 and 17:00, Settings → Notifications), only when something waits, recounted when it is sent and dropped if
 everything was decided; run problems that block work still alert on their own. Between those times, the same
 notice also goes out once a meeting's proposals are ready (one notice for meetings that end together, none within
-half an hour of the last; Settings → Notifications → "Also after meetings"). Still to do: accepting meeting proposals
-and answering Questions from the list itself.
+half an hour of the last; Settings → Notifications → "Also after meetings"). Meetings and Questions are decided in
+the list too: "Decide here" shows a meeting's open proposals with the review's own preselection (add the selected
+ones, apply updates, or dismiss the rest and finish), and "Answer here" shows a question with the same controls as
+the Questions page. One assistant: remotea's terminal assistant is Dani (remotea #79), and from the host it can
+list and read runs, search tasks and read this list over the link (`lookup.request`, eridani #265). Phase 2 is
+built; what is left is using it for a few days and fixing what gets in the way.
 
 ### Phase 3: widen the inputs
 

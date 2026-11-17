@@ -3054,7 +3054,7 @@ export default function App() {
             {view === "person" && <Suspense fallback={<p role="status">Loading…</p>}><PersonPage actorId={personActor}
               onMeetings={() => { setMeetingSource(null); setView("meetings"); }} onMeeting={openMeeting} onPerson={openPerson}/></Suspense>}
             {view === "needs" && (boot.workspace?.id ? <p>Switch to Personal to see what needs you.</p>
-              : <Suspense fallback={<p role="status">Loading…</p>}><NeedsYouPage refresh={memoryRevision + noteRevision} onOpen={openNeeded}/></Suspense>)}
+              : <Suspense fallback={<p role="status">Loading…</p>}><NeedsYouPage refresh={memoryRevision + noteRevision} onOpen={openNeeded} people={organization.actors}/></Suspense>)}
             {view === "questions" && (boot.workspace?.id?<p>Switch to Personal to review your questions.</p>:<Questions refresh={memoryRevision+noteRevision} people={organization.actors}/>)}
             {view === "organize"&&!boot.workspace?.id&&<Questions organization compact refresh={noteRevision}/>}
             {view === "memory" && (

@@ -34,7 +34,7 @@ export type RemoteaSession = {
 export type SessionOrigin = "run" | "remotea" | "other";
 export type RemoteaStatus = {
   enabled: boolean; key: { id: string; prefix: string; expires_at: string; last_used_at: string | null } | null;
-  hosts: Host[]; link_url: string; connect_command: string; token?: string | null; auto_complete?: boolean; auto_merge?: boolean; quiet_bypass?: boolean;
+  hosts: Host[]; link_url: string; connect_command: string; token?: string | null; auto_complete?: boolean; auto_merge?: boolean; quiet_bypass?: boolean; planner_model?: string;
   /** The MCP key the last setup code carried (prefix and expiry only); `setup_code` is in a minting response only. */
   mcp_key?: { id: string; prefix: string; expires_at: string; last_used_at: string | null } | null;
   setup_command?: string; setup_code?: string | null;
@@ -201,6 +201,10 @@ export type Run = {
   ci?: RunCi | null;
   /** Merge from Eridani (run_merge.py; older Eridani: absent): whether the pull request can be merged or updated now. */
   merge?: RunMerge | null;
+  /** What the agent's own session reported as failed, while it stands (run_trouble.py; older Eridani: absent). */
+  trouble?: { kind: "rate_limited" | "auth_expired" | "errored"; detail: string; at?: string | null } | null;
+  /** The run moved to another model because its own could not go on (run_trouble.py). */
+  model_fallback?: { from: string | null; to: string; why: string; at?: string | null } | null;
   /** Auto-merge (run_merge.py, phase 1b): the run's toggle; offered only with a verify entry or CI. */
   auto_merge?: { enabled: boolean; available: boolean; why: string | null; tries: number; active: boolean } | null;
   /** Reopen terminal (run_reopen.py; older Eridani: absent): resume the run's exited agent in place. `pending` while the
@@ -1528,9 +1532,17 @@ export const ATTENTION_GROUPS: { key: AttentionKey; verb: string; action: boolea
 // needs_you reasons the host or its setup must fix (verify_infra: a verification that could not run).
 // host_busy: the host is at limits.maxRuns, so a reviewer or the worker cannot start until a slot frees up.
 // ci_unavailable: the host cannot report GitHub CI (remotea without ci.status).
-const REPAIR_REASONS = new Set(["host_offline", "surface_lost", "exited", "spawn_expired", "delivery_uncertain", "verify_infra", "host_busy", "ci_unavailable"]);
+const REPAIR_REASONS = new Set(["host_offline", "surface_lost", "exited", "spawn_expired", "delivery_uncertain", "verify_infra", "host_busy", "ci_unavailable",
+  // The agent's own session failed (run_trouble.py): usage ran out, signed out, or the harness reported an error.
+  "rate_limited", "auth_expired", "agent_errored"]);
 const ANSWER_REASONS = new Set(["question_timed_out", "brainstorm"]);
 const UNMERGED_REASONS = new Set(["awaiting_merge"]);
+
+/** One line for a run that changed model by itself, or null. */
+export function modelFallbackLine(run: Pick<Run, "model_fallback">): string | null {
+  const moved = run.model_fallback;
+  return moved ? `Changed model: ${moved.from ?? "the first model"} could not go on (${moved.why}), so this run carries on under ${moved.to}.` : null;
+}
 
 function hostOffline(run: Run, hosts: Host[]) {
   if (!run.host) return false;

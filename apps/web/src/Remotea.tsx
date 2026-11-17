@@ -30,12 +30,13 @@ import { RunLineage, RunRestart } from "./RunRestart";
 import { TaskRoute } from "./TaskRoute";
 import { AutoStartSettings } from "./AutoStartSettings";
 import { modelOptions, plannerDefaultLabel, type ModelOption } from "./RunModels";
+import { PlannerModelSetting } from "./PlannerModelSetting";
 import { LearningsSettings } from "./LearningsSettings";
 import { focusTarget } from "./run-restart";
 import { anchoredScrollTop, earlierLine, mergeDetail, nextOffset, scrollAnchor, type FullTurn } from "./remotea-model";
 import { focusSentText, reopenButton, terminalFallback, type FocusResult } from "./remotea-model";
 import { APPROVAL_FACTS, ciCard, freshnessFacts, mergePanel, type Fact } from "./remotea-model";
-import { actorChip, brainstormSaid, canCloseUnconfirmedStop, CLOSE_UNCONFIRMED_STOP, hostBusyText, modelLabel, planApprovalBody, PLAN_STOPS, reviewFindings, reviewTitle, type PlanReviewRow } from "./remotea-model";
+import { actorChip, brainstormSaid, canCloseUnconfirmedStop, modelFallbackLine, CLOSE_UNCONFIRMED_STOP, hostBusyText, modelLabel, planApprovalBody, PLAN_STOPS, reviewFindings, reviewTitle, type PlanReviewRow } from "./remotea-model";
 import { dismissQuestion, looseSessions, originLabel, sessionTargets, unmergedWithRuns, type AdvertisedTarget, type SavedTarget, type SessionTarget } from "./remotea-model";
 import { Dialog } from "./ux";
 
@@ -321,6 +322,8 @@ export function RemoteaSettings({ readOnly, onChanged }: { readOnly: boolean; on
         <input type="checkbox" checked={!!status.auto_merge} disabled={busy || readOnly}
           onChange={e => void change("/remotea/auto-merge", { enabled: e.target.checked })}/>
       </SettingRow>
+      <PlannerModelSetting value={status.planner_model ?? "strongest"} readOnly={readOnly} busy={busy}
+        onChange={value => void change("/remotea/planner-model", { value })}/>
       <AutoStartSettings readOnly={readOnly}/>
       <LearningsSettings readOnly={readOnly}/>
       <SettingRow as="label" label="Agent questions break quiet hours"
@@ -1177,6 +1180,7 @@ export function RunDrawer({ id, onClose, preloaded }: {
         </div>}
         {chatOpen && isSettled(run) && <p className="remotea-chat-end">{runLabel(run.state)}{run.finished_at ? " · " + ago(run.finished_at) : ""}</p>}
         {bound && isSettled(run) && <RunRestart run={run} disabled={!!busy} onRestarted={openRun}/>}
+        {modelFallbackLine(run) && <p className="remotea-warning" role="note">{modelFallbackLine(run)}</p>}
         <details className="run-drawer-details"><summary>Details</summary>
           <dl><dt>Task</dt><dd>{run.task?.id ?? "Standalone"}</dd><dt>Run</dt><dd>{run.id}</dd><dt>Branch</dt><dd>{run.branch || "Not reported"}</dd>
             <dt>Worktree</dt><dd>{run.worktree || "Not reported"}</dd><dt>Host</dt><dd>{run.host?.name ?? "Not reported"}</dd><dt>Turns</dt><dd>{run.turn_count}{run.turn_cap > 0 ? `/${run.turn_cap}` : ""}</dd></dl>

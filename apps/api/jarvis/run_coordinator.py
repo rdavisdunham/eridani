@@ -159,6 +159,9 @@ REASONS = {
     "wall_clock": "The run reached its wall-clock limit.",
     "no_progress": "No progress for a while.",
     "stalled": "The agent looks stuck: its terminal has been silent while it reads as working.",
+    "rate_limited": "The agent's model ran out of usage, or the provider is refusing requests for now.",
+    "auth_expired": "The agent is signed out on that computer.",
+    "agent_errored": "The agent's session reported an error and stopped.",
     "turn_cap": "The run reached its turn cap.",
     "question_timed_out": "The question timed out here; answer it in the terminal.",
     "no_plan": "The agent ended its planning turn without asking questions or submitting a plan.",
@@ -186,6 +189,7 @@ REASONS = {
     "merge_blocked": "Auto-merge stopped: GitHub would not merge the pull request.",
     # Working states: what just happened, so the page never shows a raw reason token.
     "start": "Starting the agent.",
+    "model_fallback": "The run carried on under another model.",
     "started": "The agent is up; planning.",
     "interview_answered": "You answered the agent's questions; it is writing the plan.",
     "plan_submitted": "The agent submitted its plan.",
@@ -1033,6 +1037,13 @@ def on_status(db, row, frame, host_id=None):
         stalled = frame.state == "working" and trouble is not None and trouble.kind == "stalled"
         if frame.state == "working" and not stalled:
             run.last_progress_at = now()
+        from . import run_trouble
+
+        if trouble is not None and trouble.kind in run_trouble.KINDS:
+            # The harness says its own turn failed: carry on under another model when that fixes it, else stop.
+            return run_trouble.reported(db, run, trouble)
+        if trouble is None and frame.state == "working":
+            run_trouble.cleared(run)  # New work: whatever was wrong is over.
         if run.state == "needs_you" and (run.state_reason in SELF_HEALING or (run.state_reason == "stalled" and not stalled)):
             # The terminal is back, or the stalled agent produced output again: the run heals itself.
             transition(db, run, phase(run), reason="surface_restored")

@@ -373,9 +373,11 @@ class Surface(Frame):
 
 
 class Trouble(Frame):
-    """What is wrong with a session that still reads as working (remotea's watchdog): today only `stalled`."""
+    """What is wrong with a session that its state does not show: `stalled` (remotea's watchdog: working but silent),
+    or a failure the harness itself reported, `rate_limited`, `auth_expired` or `errored` (run_trouble.py)."""
     kind: str = Field(max_length=20)
-    detail: str = Field(default="", max_length=200)
+    detail: str = Field(default="", max_length=400)
+    since: int | None = None
 
 
 class Status(Surface):

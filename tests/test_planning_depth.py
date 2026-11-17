@@ -85,3 +85,17 @@ def test_planning_prompts_point_at_the_installed_skill_with_the_three_adaptation
     ideas = prompts.ideate(type("T", (), {"title": "Uploads"})(), "Uploads")
     for needed in ("ce-ideate", "six different angles", "Search the web", "basis the operator can check"):
         assert needed in ideas, needed
+
+
+def test_the_owner_chooses_what_plans_when_no_model_is_named(host, client):
+    offers(host, managed=True)
+    assert control.planning_default(CATALOG, "claude", "host") is None
+    assert control.planning_default(CATALOG, "claude", "sonnet") == "sonnet"
+    assert control.planning_default(CATALOG, "claude", "not-offered") == "claude-fable-5-2"  # Falls back to the strongest.
+    assert client.get("/api/v1/remotea/status").json()["planner_model"] == "strongest"
+    assert client.post("/api/v1/remotea/planner-model", json={"value": "sonnet"}).json()["planner_model"] == "sonnet"
+    assert models(start(host, task("Plan on my pick")["id"])["id"]) == ("sonnet", "claude-opus-5-5")
+    assert [m["model"] for m in client.get("/api/v1/remotea/model-catalog").json()["models"] if m["planning_default"]] == ["sonnet"]
+    client.post("/api/v1/remotea/planner-model", json={"value": "host"})
+    assert models(start(host, task("Plan on the usual")["id"])["id"]) == ("claude-opus-5-5", "claude-opus-5-5")
+    assert client.post("/api/v1/remotea/planner-model", json={"value": "two words"}).status_code == 422

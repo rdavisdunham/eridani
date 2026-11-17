@@ -139,6 +139,14 @@ def skill_note(name, *, method_below=True):
         "If a tool is refused, note what you could not check and go on.")
 
 
+def model_fallback(why):
+    """Sent with the model change after the session's model could not go on (run_trouble.fall_back)."""
+    return ("Your last turn did not finish: the model you were running on could not go on (" + why + "). This "
+            "session has been moved to another model and your conversation so far is intact. Carry on from exactly "
+            "where you were: if you were about to ask the operator something or call an Eridani tool, do that now. "
+            "Do not start over, and do not repeat anything you already did.")
+
+
 NO_SKILL = "WITHOUT THE SKILL (use this section as your method only when no such skill is listed):"
 
 

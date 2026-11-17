@@ -32,7 +32,7 @@ LEVELS = ("low", "normal", "high", "urgent")
 # Push vehicles for other notices. They are never items of their own on the Notifications page.
 VEHICLES = {"bundle", "digest"}
 # Scheduled summaries: each pushes alone and is never folded into a bundle or digest (`plan`).
-SUMMARIES = {"morning", "context_digest"}
+SUMMARIES = {"morning", "context_digest", "needs_you"}
 # This many interrupting notices due in one pass become one bundled push.
 BUNDLE_AT = 2
 DIGEST_HOURS = {"hourly": 1, "every_3_hours": 3}
@@ -295,6 +295,11 @@ def eligible(db, n, instant=None):
         from .context.notices import current
 
         return current(db, n, instant)
+    if n.category == "needs_you":
+        # The "Needs you" summary: recounted when it goes out, and dropped once nothing waits.
+        from .needs_you import still_current
+
+        return still_current(db, n)
     if n.category == "morning":
         task_ids = []
         for identity in n.target.get("task_ids", []):
@@ -564,3 +569,6 @@ def scan(db):
     for owner in owners:
         sync_deadlines(db, owner)
         morning(db, owner)
+        from .needs_you import summary as needs_you_summary
+
+        needs_you_summary(db, owner)

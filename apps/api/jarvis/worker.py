@@ -226,6 +226,7 @@ def notification_url(notification):
     if target.get("view")=="remotea":return "/?"+urlencode({"view":"remotea","run":target.get("run_id") or ""})
     if target.get("view")=="meetings":return "/?"+urlencode({"view":"meetings",**({"source":target["source_id"]} if target.get("source_id") else {})})
     if notification.task_id:return "/?"+urlencode({"view":"tasks","tab":"all","record":"task:"+notification.task_id,"workspace":"personal"})
+    if target.get("view")=="needs":return "/?view=needs"
     if target.get("view")=="activity":return "/?view=tasks&activity=1"
     if target.get("view")=="tasks":return "/?view=tasks&tab=today"
     return "/?view=notifications"

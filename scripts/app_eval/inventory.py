@@ -65,6 +65,7 @@ EXACT = {
     "session_rule": "external_agents",
     "session_rules": "external_agents",
     "ui_activity": "receipts",
+    "needs_you": "queue",  # the one "Needs you" list (needs_you.py)
 }
 for prefix in ("calendar", "linear"):
     for action in ("create", "delete", "publish", "resolve", "update"):
@@ -115,6 +116,8 @@ def route_owner(path, source):
         return "routing_rules"
     if "/structure" in path:
         return "custom_records" if any(x in path for x in ("record", "template", "/reviews", "by-core")) else "custom_schema"
+    if "/needs-you" in path:
+        return "queue"
     if "/work/actions" in path or "/commands/" in path:
         return "receipts"
     if "/work" in path:

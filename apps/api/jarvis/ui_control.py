@@ -23,6 +23,7 @@ View = Literal[
     "remotea",
     "meetings",
     "person",
+    "needs",
 ]
 
 

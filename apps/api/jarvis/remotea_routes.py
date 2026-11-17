@@ -1035,7 +1035,11 @@ def model_catalog(user: User):
     with session_scope() as db:
         owner_only(db, user)
         hosts = list(db.scalars(select(AgentHost).where(AgentHost.owner_id == user.owner_id)))
-        return {"models": [{**model, "host_id": host.id} for host in hosts
+        def planning(host, model):
+            # What a planner on this host runs on when no model is chosen (agent_control.planning_default).
+            catalog = (host.caps or {}).get("model_catalog", [])
+            return bool(model.get("model")) and model.get("model") == control.planning_default(catalog, model.get("harness"))
+        return {"models": [{**model, "host_id": host.id, "planning_default": planning(host, model)} for host in hosts
                            for model in (host.caps or {}).get("model_catalog", []) if isinstance(model, dict)],
                 "legacy_hosts": [host.id for host in hosts if "role.options" not in ((host.caps or {}).get("caps") or [])]}
 

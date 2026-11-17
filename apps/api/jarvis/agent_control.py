@@ -218,6 +218,31 @@ def brainstorm_public(run):
     return public(run)
 
 
+PLANNING_ALIASES = {"claude": "fable"}
+PLANNING_MODELS = {"claude": re.compile(r"^claude-fable-(\d+)(?:-(\d+))?$")}
+
+
+def planning_default(catalog, harness):
+    """The model a planner runs on when none was chosen: the newest of the harness's strongest family among those
+    the host offers (Claude: Fable), or None to use the host's default. A choice in the Run dialog, in Dani's
+    control_start or on a reviewer or worker always wins."""
+    family = PLANNING_MODELS.get(harness)
+    if family is None:
+        return None
+    found = []
+    for model in catalog or []:
+        if not isinstance(model, dict) or model.get("harness") != harness:
+            continue
+        match = family.match(str(model.get("model") or ""))
+        if match:
+            found.append(((int(match.group(1)), int(match.group(2) or 0)), model["model"]))
+    if found:
+        return max(found)[1]
+    # A host that lists the family only by its alias (a fresh Claude Code install does).
+    alias = PLANNING_ALIASES.get(harness)
+    return alias if any(isinstance(m, dict) and m.get("harness") == harness and m.get("model") == alias for m in catalog or []) else None
+
+
 def direction_first(task, roles) -> bool:
     """Does a run of this task take the direction check (run_direction.on_route, before the run exists)?"""
     return task.run_route == "direction" and not (roles or {}).get("reviewer")
@@ -719,11 +744,22 @@ def start_run(db, owner, account_id, body, *, actor, brief="", opening="", resta
     selected_managed = selected_launch.get("managed", ((host.caps or {}).get("harnesses", {}).get(body.harness) or {}).get("managed", False)) if host else False
     managed_start = coordinator.host_cap(db, host.id, "managed.sessions") and selected_managed if host else False
     catalog = (host.caps or {}).get("model_catalog", []) if host else []
+    # Planning gets the strongest model the host offers when nobody chose one (planning_default): direction is where
+    # a better model pays. Only where the planner is a session of its own (a managed run, an ideas session), so the
+    # work itself stays on the host's default unless a worker was named.
+    planner_pick = None
+    if not body.model and not body.freestyle and restart is None and (managed_start or body.ideate):
+        planner_pick = planning_default(catalog, body.harness)
+    host_default = None
     for spec in [body, body.reviewer, body.worker]:
         if spec and not spec.model:
             candidates = [m for m in catalog if m.get("harness") == spec.harness]
             chosen = next((m for m in candidates if m.get("default") or m.get("is_default") or m.get("isDefault")), None)
-            if chosen:
+            if spec is body:
+                host_default = chosen.get("model") if chosen else None
+            if spec is body and planner_pick:
+                spec.model = planner_pick
+            elif chosen:
                 spec.model = chosen.get("model")
             elif candidates or managed_start:
                 raise DomainError("MODEL_DEFAULT_UNAVAILABLE", "This host has not reported the provider default model. Choose an advertised model explicitly.", 409,
@@ -739,7 +775,10 @@ def start_run(db, owner, account_id, body, *, actor, brief="", opening="", resta
         planner = role_spec(RoleInput(harness=body.harness, model=body.model, effort=body.effort,
                                       permission_profile=body.permission_profile))
         roles = roles or {"planner": planner, "reviewer": None, "worker": None, "rounds": 0, "approve_final": True}
-        roles["worker"] = roles.get("worker") or {**planner, "permission_profile": "workspace-write"}
+        roles["worker"] = roles.get("worker") or {
+            **planner, "permission_profile": "workspace-write",
+            # A planner that was given the planning default hands over to the host's own default, not to itself.
+            **({"model": host_default} if planner_pick and host_default else {})}
     validate_role_options(host, body.harness, body.model, body.effort, body.permission_profile)
     for spec in (body.reviewer, body.worker):
         if spec:

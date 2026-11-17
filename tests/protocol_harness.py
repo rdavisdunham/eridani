@@ -636,6 +636,36 @@ class RealAgentHost(RemoteaHost):
         (self.home / ".claude.json").write_text(json.dumps({
             "hasCompletedOnboarding": True, "projects": {str(p): trusted for p in (self.repo, self.worktrees, self.home)}}))
 
+    def install_plugins(self, *names):
+        """Give the scratch home the owner's installed Claude Code plugins (read where they are; nothing is copied
+        but the two small index files), so a test can see what an agent does with a skill such as ce-brainstorm.
+        `names`: the `plugin@marketplace` keys to enable; all installed ones when empty."""
+        real = Path.home() / ".claude" / "plugins"
+        index = json.loads((real / "installed_plugins.json").read_text())
+        installed = list((index.get("plugins") or index).keys())
+        wanted = [n for n in installed if not names or n in names]
+        target = self.home / ".claude" / "plugins"
+        target.mkdir(parents=True, exist_ok=True)
+        for name in ("installed_plugins.json", "known_marketplaces.json"):
+            if (real / name).is_file():
+                shutil.copy(real / name, target / name)
+        settings = self.home / ".claude" / "settings.json"
+        current = json.loads(settings.read_text()) if settings.is_file() else {}
+        settings.write_text(json.dumps({**current, "enabledPlugins": {**current.get("enabledPlugins", {}), **{n: True for n in wanted}}}))
+        return wanted
+
+    def tool_uses(self):
+        """Every tool the agent called, from its transcripts in the scratch home: [(tool, input)]."""
+        out = []
+        for path in sorted((self.home / ".claude" / "projects").rglob("*.jsonl")):
+            for line in path.read_text(errors="replace").splitlines():
+                with contextlib.suppress(ValueError):
+                    message = (json.loads(line).get("message") or {})
+                    for block in message.get("content") or [] if isinstance(message.get("content"), list) else []:
+                        if isinstance(block, dict) and block.get("type") == "tool_use":
+                            out.append((block.get("name"), block.get("input") or {}))
+        return out
+
     def env(self):
         token, _ = access_token()
         path = os.pathsep.join([str(Path(self.claude).parent), str(Path(self.node).parent), "/usr/local/bin", "/usr/bin", "/bin"])

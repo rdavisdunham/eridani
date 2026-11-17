@@ -36,3 +36,14 @@ describe("a stop the computer never confirmed", () => {
     expect(canCloseUnconfirmedStop({ state: "stopping", host: null })).toBe(false);
   });
 });
+
+describe("planning depth: which model plans", () => {
+  it("names the planning default when the host has one, else the host's default", async () => {
+    const { plannerDefaultLabel } = await import("./RunModels");
+    const option = (model: string, extra = {}) => ({ host_id: "h", harness: "claude", model, efforts: [], permission_profiles: [], ...extra });
+    expect(plannerDefaultLabel([option("claude-opus-5-5", { default: true, label: "Opus 5.5" }), option("claude-fable-5-2", { planning_default: true, label: "Fable 5.2" })], "claude"))
+      .toBe("Planning default (Fable 5.2)");
+    expect(plannerDefaultLabel([option("claude-opus-5-5", { default: true, label: "Opus 5.5" })], "claude")).toBe("Model default (Opus 5.5)");
+    expect(plannerDefaultLabel([], "claude")).toBe("Model default");
+  });
+});

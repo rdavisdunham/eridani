@@ -2108,6 +2108,20 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/remotea/route-labels",
+      "handler": "get_route_labels",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/remotea/route-labels",
+      "handler": "set_route_labels",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/remotea/runs",
       "handler": "runs",
       "source": "apps/api/jarvis/remotea_routes.py",

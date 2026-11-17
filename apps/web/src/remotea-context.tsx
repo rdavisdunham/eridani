@@ -55,6 +55,11 @@ export const RemoteaActionsContext = createContext<RemoteaActions>(NO_ACTIONS);
 export const useRemotea = () => useContext(RemoteaDataContext);
 export const useRemoteaActions = () => useContext(RemoteaActionsContext);
 
+/** The open decisions from `/remotea/decisions` (its key is `decisions`; `items` is accepted from older servers). */
+export function decisionList(value: { decisions?: RunDecision[]; items?: RunDecision[] }): RunDecision[] {
+  return value.decisions ?? value.items ?? [];
+}
+
 function readStored() {
   try { return sessionStorage.getItem(PANEL_STORAGE_KEY); } catch { return null; }
 }
@@ -86,10 +91,11 @@ export function RemoteaProvider({ children }: { children: ReactNode }) {
       api<RemoteaStatus>("/remotea/status"),
       api<{ items: Run[] }>("/remotea/runs?active=true&limit=100"),
       api<{ items: PendingControl[] }>("/remotea/pending"),
-      api<{ items: RunDecision[] }>("/remotea/decisions"),
+      api<{ decisions?: RunDecision[]; items?: RunDecision[] }>("/remotea/decisions"),
     ]);
     if (!current()) return;
-    if (d.status === "fulfilled") setDecisions(d.value.items);
+    // The route answers {decisions}; reading `items` left this undefined and broke Confirm and Decline.
+    if (d.status === "fulfilled") setDecisions(decisionList(d.value));
     if (s.status === "fulfilled") setStatus(s.value);
     if (r.status === "fulfilled") setActiveRuns(r.value.items);
     if (p.status === "fulfilled") {

@@ -89,7 +89,9 @@ SERVER_CAPS = ["chunk", "chunking", "session.report", "session.report.parity", "
                # The host's `remotea doctor` summary: in hello (`doctor`), and as a `doctor` frame when it changes.
                "doctor", "decisions.durable", "commands.durable", "run.pause", "run.cleanup", "run.cleanup.handoff", "input.direct", "output.live", "role.options", "managed.sessions", "activity",
                # Reopen terminal (run_reopen.py): resume a run's exited worker in place.
-               "run.reopen"]
+               "run.reopen",
+               # Read-only lookups for the host's assistant (link_lookup.py): runs, a run, tasks, Needs you.
+               "lookup"]
 # Command kind -> host capability it needs.
 COMMANDS: dict[str, str] = {"automation.hold": "input.direct", "run.cleanup": "run.cleanup", "run.pause": "run.pause", "run.resume": "run.pause", "spawn": "spawn", "input": "input", "answer": "answer", "stop": "stop", "verify": "verify",
                             # Rescan worktrees and the run's session and report both now (the judge's PR evidence).
@@ -551,6 +553,17 @@ class ContextRequest(Frame):
     run_id: str | None = Field(default=None, max_length=36)
     generation: int = Field(default=0, ge=0)
     task_id: str | None = Field(default=None, max_length=36)
+
+
+class LookupRequest(Frame):
+    """The host's assistant asks to read runs, one run, tasks or the Needs you list (link_lookup.py)."""
+    req_id: str = Field(min_length=1, max_length=200)
+    what: Literal["runs", "run", "tasks", "needs_you"]
+    run_id: str | None = Field(default=None, max_length=36)
+    active: bool = True
+    query: str | None = Field(default=None, max_length=200)
+    status: Literal["open", "done", "all"] = "open"
+    limit: int = Field(default=10, ge=1, le=25)
 
 
 class WorktreesReport(Frame):
@@ -1450,6 +1463,17 @@ class Link:
             except DomainError as exc:
                 reply = {"text": f"Eridani could not load this session's context ({exc.code}).", "scope": "candidates"}
             await self.send("context.response", req_id=body.req_id, **reply)
+            return NO_ACK
+        if kind == "lookup.request":
+            # Ephemeral like context.request: answered by req_id, never acked or replayed (link_lookup.py).
+            from .link_lookup import lookup
+
+            body = LookupRequest.model_validate(frame)
+            try:
+                reply = {"ok": True, "data": await self.effect(lookup, body)}
+            except DomainError as exc:
+                reply = {"ok": False, "error": exc.message}
+            await self.send("lookup.response", req_id=body.req_id, **reply)
             return NO_ACK
         if kind == "verify.result":
             return await self.effect(verify_result, VerifyResult.model_validate(frame))

@@ -78,6 +78,8 @@ class StartInput(Input):
     freestyle: bool = False
     # Talk the task through first (run_brainstorm.py): the run opens as a conversation and plans when the owner says so.
     brainstorm: bool = False
+    # An ideas session (run_ideas.py): a conversation that ends in tasks, not a plan. Set by run_ideas.start.
+    ideate: bool = False
     # Hyperplan (docs/AGENT_CONTROL.md, "Hyperplan and roles"): a reviewer turns the review loop on (`rounds` reviews,
     # each a fresh read-only session); a worker that differs from the planner gets the approved plan in a fresh
     # session; approve_final pauses in needs_you(plan_approval) before the work starts. Either forces a planning
@@ -204,6 +206,11 @@ class TargetInput(Input):
 def learning_public(db, run):
     from .run_learnings import for_run
     return for_run(db, run)
+
+
+def ideas_public(run):
+    from .run_ideas import public
+    return public(run)
 
 
 def brainstorm_public(run):
@@ -753,7 +760,10 @@ def start_run(db, owner, account_id, body, *, actor, brief="", opening="", resta
         # "Your direction first": the brief that comes with the plan carries the agent's questions, and the owner
         # answers once. An interview before it would ask them twice (run_direction.py).
         interview = False
-    brainstorm = bool(body.brainstorm) and not body.freestyle and restart is None and not auto
+    ideate = bool(body.ideate) and not body.freestyle and restart is None and not auto
+    if ideate and (body.reviewer or body.worker or body.brainstorm):
+        raise DomainError("INVALID_ARGUMENT", "An ideas session has no plan to review, hand over or talk through.")
+    brainstorm = (bool(body.brainstorm) or ideate) and not body.freestyle and restart is None and not auto
     if brainstorm and body.interview is False:
         raise DomainError("INVALID_ARGUMENT", "Talking it through first and running the plan as it stands are opposites; choose one.")
     if brainstorm:
@@ -792,9 +802,10 @@ def start_run(db, owner, account_id, body, *, actor, brief="", opening="", resta
 
         note = db.get(Note, task.prd_note_id) if task.prd_note_id else None
         prd = note.content if note and note.owner_id == owner and not note.archived else ""
-        run_brainstorm.begin(run)
-        prompt = prompts.brainstorm(task, coordinator.children(db, task), task.notes or "", prd,
-                                    verify_ids(db, run)[1], roles)[:PROMPT_CHARS]
+        run_brainstorm.begin(run, "ideate" if ideate else "brainstorm")
+        prompt = (prompts.ideate(task, task.notes or "") if ideate else
+                  prompts.brainstorm(task, coordinator.children(db, task), task.notes or "", prd,
+                                     verify_ids(db, run)[1], roles))[:PROMPT_CHARS]
     elif interview:
         from . import agent_prompts as prompts
 
@@ -1535,6 +1546,8 @@ def public_run(db, run, *, detail=False, limit=DETAIL_PAGE, offset=0):
         "direction": direction_public(db, run),
         # Brainstorm (run_brainstorm.py): the conversation before the plan, and whether it is still open.
         "brainstorm": brainstorm_public(run),
+        # Ideate (run_ideas.py): the ideas read from the agent's messages, and the tasks made from them.
+        "ideas": ideas_public(run),
         # Compound (run_learnings.py): what this run wrote down for later runs in its repository, if anything.
         "learning": learning_public(db, run),
         # Started by auto-start (auto_start.py), not by the owner.

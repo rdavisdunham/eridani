@@ -6,6 +6,7 @@ worker would do with paid model calls happens here on a thread with scripted mod
 
 - readiness jobs (readiness.py): a task whose title says "migration" changes a schema; one that says "call" is not
   an agent's work; every other task is a small code change with one drafted criterion;
+- ideas jobs (run_ideas.py): the agent's message proposes two ideas;
 - judge jobs (agent_judge.py): every criterion of the plan is met;
 - the supervisor's sweeps for readiness, auto-start and runs. The run sweep is given a clock 70 seconds ahead, so a
   verdict held for a pull request record settles at once instead of after a minute.
@@ -15,7 +16,7 @@ import threading
 import time
 from datetime import timedelta
 
-from jarvis import agent_judge, auto_start, readiness
+from jarvis import agent_judge, auto_start, readiness, run_ideas
 from jarvis import run_coordinator as coordinator
 from jarvis.api import app  # noqa: F401 - the app uvicorn serves
 from jarvis.db import session_scope
@@ -24,6 +25,7 @@ from sqlalchemy import select
 
 log = logging.getLogger("full_stack_acceptance")
 readiness.enabled = lambda: True
+run_ideas.enabled = lambda: True  # This process is the API too: an ideas turn queues its reading.
 
 
 def ready_answer(body):
@@ -41,6 +43,13 @@ def met(evidence):
         for c in evidence["plan"]["criteria"]])
 
 
+def ideas_answer(body):
+    """The scripted agent's ideas message names two ideas (tests/protocol_harness.py STUB)."""
+    return run_ideas.Answer(ideas=[
+        run_ideas.Idea(title="Retry failed uploads", summary="Uploads give up on the first error.", why="Most support tickets.", size="small"),
+        run_ideas.Idea(title="Show upload progress", summary="A bar in the uploader.", why="People cancel long uploads.", size="medium")])
+
+
 def queued(kind):
     with session_scope() as db:
         return list(db.scalars(select(Job.id).where(Job.kind == kind, Job.status == "queued").order_by(Job.created_at)))
@@ -49,6 +58,8 @@ def queued(kind):
 def cycle():
     for job in queued(readiness.KIND):
         readiness.process(job, model=ready_answer)
+    for job in queued(run_ideas.KIND):
+        run_ideas.process(job, model=ideas_answer)
     for job in queued("agent_judge"):
         agent_judge.process(job, model=met)
     for sweep in (readiness.sweep, auto_start.sweep, lambda db: coordinator.sweep(db, now() + timedelta(seconds=70))):

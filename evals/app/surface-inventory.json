@@ -1970,6 +1970,13 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/remotea/ideas",
+      "handler": "new_ideas",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/remotea/interviews/{identity}/answers",
       "handler": "interview_answers",
       "source": "apps/api/jarvis/remotea_routes.py",
@@ -2168,6 +2175,13 @@
       "method": "POST",
       "path": "/api/v1/remotea/runs/{identity}/freestyle",
       "handler": "freestyle",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/remotea/runs/{identity}/ideas/tasks",
+      "handler": "ideas_to_tasks",
       "source": "apps/api/jarvis/remotea_routes.py",
       "feature": "agent_control"
     },

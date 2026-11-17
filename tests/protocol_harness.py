@@ -399,7 +399,7 @@ function submitPlan(prompt) {
   log({ plan: out.plan_revision || null, brief: !!body.brief, reply: out.plan_revision ? undefined : out });
   return `Stub plan submitted (revision ${out.plan_revision}).`;
 }
-let turns = 0, talking = false, talks = 0;
+let turns = 0, talking = false, talks = 0, ideating = false;
 function turn(prompt) {
   turns += 1;
   const promptId = crypto.randomUUID();
@@ -410,10 +410,14 @@ function turn(prompt) {
   // A brainstorm (run_brainstorm.py): the spawn prompt opens a conversation, and every prompt until the request for
   // the plan is the operator's reply. The stub asks one question per turn and changes nothing.
   if (fs.existsSync(SCRIPT) && /begins as a conversation/.test(prompt)) talking = true;
+  // An ideas session (run_ideas.py) is the same kind of conversation; the stub proposes two ideas.
+  else if (fs.existsSync(SCRIPT) && /Eridani ideas session/.test(prompt)) { talking = true; ideating = true; }
   else if (talking && /ready for the plan/.test(prompt)) talking = false;
   if (fs.existsSync(SCRIPT) && talking) {
     talks += 1;
-    said = talks === 1 ? 'I read the task and the code. Before I suggest anything: what do you already have in mind? (A) keep it short, (B) make it warmer.'
+    if (ideating) said = talks === 1 ? '1. **Retry failed uploads** Uploads give up on the first error. Size: small.\n2. **Show upload progress** A bar in the uploader. Size: medium.\nWhich should I take further?'
+      : `Noted (${prompt.slice(0, 60)}). The two ideas stand. Which should I take further?`;
+    else said = talks === 1 ? 'I read the task and the code. Before I suggest anything: what do you already have in mind? (A) keep it short, (B) make it warmer.'
       : `Understood (${prompt.slice(0, 80)}). What we're building: the change as you described it. Shall I plan it?`;
     log({ talk: talks });
   } else if (fs.existsSync(SCRIPT) && /Do not change any code|Do not start the work/.test(prompt)) {

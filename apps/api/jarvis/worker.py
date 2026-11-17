@@ -122,6 +122,10 @@ def _perform_job(job_id):
         from .readiness import process
 
         return process(job_id)
+    if kind == "run_ideas":
+        from .run_ideas import process
+
+        return process(job_id)
     if kind == "run_learning":
         from .run_learnings import process
 
@@ -206,7 +210,7 @@ def dispatch_outbox(client, after=None):
                     else "jarvis-judge" if job.kind == "agent_judge"
                     else "jarvis-memory"
                     if db.get(Job, row.job_id).kind
-                    in {"extract_memory", "embed_memory", "review_memory", "about_you", "embed_note", "assess_field", "review_routing", "index_search", "organize_note", "summarize_session", "agent_summary", "agent_autolink", "record_overview", "place_by_meaning", "task_readiness", "run_learning"}
+                    in {"extract_memory", "embed_memory", "review_memory", "about_you", "embed_note", "assess_field", "review_routing", "index_search", "organize_note", "summarize_session", "agent_summary", "agent_autolink", "record_overview", "place_by_meaning", "task_readiness", "run_learning", "run_ideas"}
                     else "jarvis",
                     "workflow_id": row.job_id + (":"+str(job.payload["dispatch_revision"]) if job.payload.get("dispatch_revision") else ""),
                 },

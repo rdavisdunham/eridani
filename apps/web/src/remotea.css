@@ -373,3 +373,18 @@
 .learnings-list p > span, .run-learning p > span { display: inline-block; min-width: 44px; font-size: 12px; color: var(--ink-3); }
 .learnings-list small { color: var(--ink-3); }
 .run-learning { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--violet); }
+
+/* Ideate: the agent's ideas as a checklist. */
+.run-ideas { border: 0; padding: 0; margin: 10px 0 0; display: grid; gap: 8px; }
+.run-ideas legend { font-size: 12px; color: var(--ink-3); padding: 0; margin-bottom: 4px; }
+.run-idea { display: flex; gap: 8px; align-items: flex-start; }
+.run-idea input { margin-top: 3px; }
+.run-idea.made strong { color: var(--ink-3); }
+.run-idea-text { display: block; margin-top: 2px; overflow-wrap: anywhere; }
+.remotea-new-session .segmented { margin-bottom: 8px; }
+/* The agent's message keeps its own line breaks (a numbered list, paragraphs). */
+.run-brainstorm-said p { white-space: pre-wrap; margin: 0; }
+/* An idea row: the box beside its text (the card's other labels stack). */
+.run-brainstorm label.run-idea { display: flex; gap: 8px; align-items: flex-start; margin-top: 0; }
+.run-brainstorm label.run-idea > span { flex: 1; min-width: 0; }
+.run-brainstorm label.run-idea > input[type="checkbox"] { width: auto; flex: 0 0 auto; margin: 3px 0 0; }

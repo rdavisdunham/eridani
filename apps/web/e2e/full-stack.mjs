@@ -152,6 +152,37 @@ try {
   expect((await readRun(talk)).brainstorm).toMatchObject({ open: false, ended_by: "owner" });
   await shot("09-plan-after-talking");
   mark("a run opens as a conversation, takes a reply, and plans when the owner says so", { run: talk });
+  // ---- 5. Get ideas: an ideas session for a repository, and a task made from one idea ----
+  await page.goto(`${base}?view=remotea`);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const fresh = page.getByRole("dialog", { name: "New session", exact: true });
+  await expect(fresh).toBeVisible();
+  await fresh.getByRole("button", { name: "Get ideas", exact: true }).click();
+  await expect(fresh).toContainText("rejects most");
+  await fresh.getByLabel("What do you want ideas for?").fill("Ways to make uploads less painful");
+  await shot("10-get-ideas-dialog");
+  const ideasStarted = page.waitForResponse(r => r.url().endsWith("/remotea/ideas") && r.request().method() === "POST");
+  await fresh.getByRole("button", { name: "Get ideas", exact: true }).last().click();
+  const ideasRun = (await (await ideasStarted).json()).id;
+  await settled(ideasRun, "needs_you", "brainstorm");
+  await expect.poll(async () => (await readRun(ideasRun)).ideas?.items?.length ?? 0, { timeout: 30000, message: "the ideas to be read into a list" }).toBe(2);
+  await openRun(ideasRun);
+  const ideasCard = view.getByRole("region", { name: "Ideas", exact: true }).first();
+  await expect(ideasCard).toContainText("Retry failed uploads", { timeout: 30000 });
+  await expect(ideasCard.getByRole("button", { name: "Plan it", exact: true })).toHaveCount(0);
+  await ideasCard.getByLabel(/Retry failed uploads/).check();
+  await ideasCard.scrollIntoViewIfNeeded();
+  await shot("11-ideas-list");
+  await ideasCard.getByRole("button", { name: "Make 1 task", exact: true }).click();
+  await expect(ideasCard).toContainText("Made 1 task", { timeout: 20000 });
+  await expect(ideasCard).toContainText("made a task");
+  const after = (await readRun(ideasRun)).ideas.items;
+  expect(after.filter(i => i.task_id).map(i => i.title)).toEqual(["Retry failed uploads"]);
+  await api(`/remotea/runs/${ideasRun}/stop`, { mode: "kill" });
+  await page.goto(`${base}?view=tasks&tab=all`);
+  await expect(page.getByText("Retry failed uploads").first()).toBeVisible({ timeout: 20000 });
+  await shot("12-task-from-idea");
+  mark("an ideas session lists the agent's ideas and makes a task from the one chosen", { run: ideasRun });
   writeFileSync(resolve(artifacts, "evidence.json"), JSON.stringify(evidence, null, 2));
   console.log(`Full stack: ${evidence.length} scenarios passed.`);
 } finally {

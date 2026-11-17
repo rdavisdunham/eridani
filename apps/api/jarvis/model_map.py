@@ -115,6 +115,8 @@ JOBS = {
             "Filing new tasks by meaning"),
         Job("task_readiness", "task_readiness", "readiness.ask", "extraction",
             "Preparing new tasks for agent runs (route, draft criteria, repository)"),
+        Job("run_ideas", "run_ideas", "run_ideas.ask", "extraction",
+            "Ideas read from an ideas session's messages"),
         Job("run_learning", "run_learnings", "run_learnings.ask", "extraction",
             "What a finished run learned, kept per repository"),
         Job("memory_extraction", "memory_learning", "memory_learning.process", "extraction",

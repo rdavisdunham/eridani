@@ -651,6 +651,38 @@ def freestyle(identity: UUID, body: control.FreestyleInput, user: User):
             db, user.owner_id, str(identity), body, actor=actor_for(user)))
 
 
+@router.post("/ideas")
+def new_ideas(body: dict, user: User):
+    """Start an ideas session: ideas for a repository before any task exists (run_ideas.start)."""
+    from pydantic import ValidationError
+
+    from . import run_ideas
+
+    try:
+        value = run_ideas.IdeasInput.model_validate(body)
+    except ValidationError:
+        raise DomainError("INVALID_ARGUMENT", "Say what you want ideas for and choose a repository.") from None
+    with session_scope() as db:
+        writable(db, user)
+        return run_ideas.start(db, user.owner_id, user.account_id, value, actor=actor_for(user))
+
+
+@router.post("/runs/{identity}/ideas/tasks")
+def ideas_to_tasks(identity: UUID, body: dict, user: User):
+    """Make a task from each chosen idea of an ideas session (run_ideas.make_tasks)."""
+    from pydantic import ValidationError
+
+    from . import run_ideas
+
+    try:
+        value = run_ideas.MakeTasksInput.model_validate(body)
+    except ValidationError:
+        raise DomainError("INVALID_ARGUMENT", "Choose at least one idea.") from None
+    with session_scope() as db:
+        writable(db, user)
+        return run_ideas.make_tasks(db, user.owner_id, str(identity), value, actor=actor_for(user))
+
+
 @router.get("/learnings")
 def learnings(user: User, target_id: UUID | None = None):
     """Compound: what finished runs wrote down, per repository (run_learnings.py)."""

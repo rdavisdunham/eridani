@@ -184,6 +184,8 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
   const [options, setOptions] = useState<SessionTarget[] | null>(null);
   const [target, setTarget] = useState(""), [harness, setHarness] = useState<"claude" | "codex">("claude");
   const [prompt, setPrompt] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
+  // "ideas": an ideas session (run_ideas.py) instead of a direct conversation.
+  const [kind, setKind] = useState<"talk" | "ideas">("talk");
   const action = useRef(crypto.randomUUID());
   useEffect(() => {
     api<{ items: SavedTarget[]; advertised: AdvertisedTarget[] }>("/remotea/targets")
@@ -196,13 +198,20 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
     setBusy(true); setError("");
     const where = chosen.saved_id ? { execution_target_id: chosen.saved_id } : { host_id: chosen.host_id, host_target: chosen.host_target };
     try {
-      const run = await post<Run>("/remotea/sessions/new", { prompt, ...where, harness, action_id: action.current });
+      const run = kind === "ideas" ? await post<Run>("/remotea/ideas", { topic: prompt, ...where, harness })
+        : await post<Run>("/remotea/sessions/new", { prompt, ...where, harness, action_id: action.current });
       onStarted(run.id);
     } catch (e) { setError(message(e)); action.current = crypto.randomUUID(); } finally { setBusy(false); }
   };
   return <Dialog onBackdrop={onClose} onEscape={onClose} className="remotea-new-session" aria-label="New session">
     <header><h2>New session</h2><button className="btn-icon" aria-label="Close" onClick={onClose}><X size={18}/></button></header>
-    <p className="footnote">Opens an agent in remotea and talks to it directly. Nothing is planned or judged unless you ask it for a plan.</p>
+    <div className="segmented" role="group" aria-label="What kind of session">
+      <button type="button" aria-pressed={kind === "talk"} disabled={busy} onClick={() => setKind("talk")}>Talk to an agent</button>
+      <button type="button" aria-pressed={kind === "ideas"} disabled={busy} onClick={() => setKind("ideas")}>Get ideas</button>
+    </div>
+    <p className="footnote">{kind === "ideas"
+      ? "The agent reads the repository, thinks of many things worth doing, rejects most, and shows you the few that survive. You pick the ones to turn into tasks. Nothing is planned or changed."
+      : "Opens an agent in remotea and talks to it directly. Nothing is planned or judged unless you ask it for a plan."}</p>
     {options && !options.length && <p className="remotea-warning" role="note">Your remotea server lists no targets. Add one to its eridani.json, then try again.</p>}
     <label className="field"><span className="field-label-text">Where</span>
       <select value={target} disabled={!options?.length || busy} onChange={e => setTarget(e.target.value)}>
@@ -212,14 +221,15 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
       <select value={harness} disabled={busy} onChange={e => setHarness(e.target.value as "claude" | "codex")}>
         <option value="claude">Claude Code</option><option value="codex">Codex</option>
       </select></label>
-    <label className="field"><span className="field-label-text">First message</span>
-      <textarea rows={5} maxLength={20000} value={prompt} disabled={busy} placeholder="What should the agent do?"
+    <label className="field"><span className="field-label-text">{kind === "ideas" ? "What do you want ideas for?" : "First message"}</span>
+      <textarea rows={5} maxLength={kind === "ideas" ? 2000 : 20000} value={prompt} disabled={busy}
+        placeholder={kind === "ideas" ? "For example: ways to make onboarding faster, or quick wins in the upload flow" : "What should the agent do?"}
         onChange={e => setPrompt(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && prompt.trim() && chosen && !busy) void start(); }}/></label>
     {error && <p role="alert" className="work-error">{error}</p>}
     <div className="settings-form-actions">
       <button className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
-      <button className="btn btn-primary btn-sm" disabled={!prompt.trim() || !chosen || busy} onClick={() => void start()}>{busy ? "Starting…" : "Start session"}</button>
+      <button className="btn btn-primary btn-sm" disabled={!prompt.trim() || !chosen || busy} onClick={() => void start()}>{busy ? "Starting…" : kind === "ideas" ? "Get ideas" : "Start session"}</button>
     </div>
   </Dialog>;
 }
@@ -561,6 +571,17 @@ export function BrainstormCard({ run, disabled, onDone, onConflict }: { run: Run
   const [reply, setReply] = useRunDraft("talk-reply:" + run.id, ""), [busy, setBusy] = useState<"" | "reply" | "plan">(""), [error, setError] = useState("");
   const waiting = run.state === "needs_you" && run.state_reason === "brainstorm";
   const said = brainstormSaid(run);
+  // An ideas session (run_ideas.py): the same conversation, ending in tasks instead of a plan.
+  const ideate = run.brainstorm?.kind === "ideate", ideas = run.ideas?.items ?? [];
+  const [picked, setPicked] = useState<string[]>([]), [made, setMade] = useState(0);
+  const open = ideas.filter(i => !i.task_id), chosen = picked.filter(id => open.some(i => i.id === id));
+  const makeTasks = async () => {
+    setBusy("plan"); setError("");
+    try {
+      const out = await post<{ created: { task_id: string }[] }>(`/remotea/runs/${run.id}/ideas/tasks`, { idea_ids: chosen });
+      setMade(out.created.length); setPicked([]); onDone();
+    } catch (e) { setError(message(e)); } finally { setBusy(""); }
+  };
   const send = async (what: "reply" | "plan") => {
     setBusy(what); setError("");
     try {
@@ -574,19 +595,35 @@ export function BrainstormCard({ run, disabled, onDone, onConflict }: { run: Run
       else { setError(RUN_CHANGED); onDone(); }
     } finally { setBusy(""); }
   };
-  return <DecisionCard title="Talking it through" task={run.task?.title} agent={actorChip(run)} className="run-brainstorm"
-    reason={waiting ? "The agent is waiting for your reply. It asks one thing at a time." : "The agent is reading and thinking. Its reply will appear here."}>
+  return <DecisionCard title={ideate ? "Ideas" : "Talking it through"} task={run.task?.title} agent={actorChip(run)} className="run-brainstorm"
+    reason={ideate ? (waiting ? "Tick the ideas worth doing and make them tasks, or reply to steer the search." : "The agent is reading the repository and thinking. Its ideas will appear here.")
+      : waiting ? "The agent is waiting for your reply. It asks one thing at a time." : "The agent is reading and thinking. Its reply will appear here."}>
     {said && <div className="run-brainstorm-said"><span>{waiting ? "It says" : "It last said"}</span><p className="remotea-plan-text">{said}</p></div>}
+    {ideate && run.ideas?.state === "reading" && !ideas.length && <p role="status" className="footnote">Reading its ideas into a list…</p>}
+    {ideate && run.ideas?.state === "unavailable" && <p role="note" className="footnote">The ideas could not be read into a list. They are in the message above; reply to ask for them again.</p>}
+    {ideate && !!ideas.length && <fieldset className="run-ideas" disabled={disabled || !!busy}><legend>Its ideas, best first</legend>
+      {ideas.map(idea => <label key={idea.id} className={idea.task_id ? "run-idea made" : "run-idea"}>
+        <input type="checkbox" checked={!!idea.task_id || picked.includes(idea.id)} disabled={!!idea.task_id}
+          onChange={e => setPicked(p => e.target.checked ? [...p, idea.id] : p.filter(id => id !== idea.id))}/>
+        <span><strong>{idea.title}</strong>{idea.size !== "unknown" && <small> · {idea.size}</small>}{idea.task_id && <small> · made a task</small>}
+          {idea.summary && <span className="run-idea-text">{idea.summary}</span>}
+          {idea.why && <span className="run-idea-text"><em>Why:</em> {idea.why}</span>}</span>
+      </label>)}
+      <div className="run-brainstorm-actions">
+        <button type="button" className="btn btn-primary btn-sm" disabled={!chosen.length} onClick={() => void makeTasks()}>{busy === "plan" ? "Making tasks…" : chosen.length ? `Make ${chosen.length} task${chosen.length === 1 ? "" : "s"}` : "Make tasks"}</button>
+        <small>{made ? `Made ${made} task${made === 1 ? "" : "s"}. Start one with "Talk it through" to shape it before planning.` : "Each becomes an ordinary task in this repository, carrying the idea's reasoning as its notes."}</small>
+      </div>
+    </fieldset>}
     <label>Your reply
-      <textarea rows={3} value={reply} disabled={disabled || !!busy} placeholder="Answer, push back, or add what it is missing"
+      <textarea rows={3} value={reply} disabled={disabled || !!busy} placeholder={ideate ? "Steer it: smaller ones, more about one area, tell me more about the second…" : "Answer, push back, or add what it is missing"}
         onChange={e => setReply(e.target.value)}
         onKeyDown={e => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && reply.trim() && !disabled && !busy) { e.preventDefault(); void send("reply"); } }}/>
     </label>
     {error && <p role="alert" className="work-error">{error}</p>}
     <div className="run-brainstorm-actions">
       <button type="button" className="btn btn-primary btn-sm" disabled={disabled || !!busy || !reply.trim()} onClick={() => void send("reply")}>{busy === "reply" ? "Sending…" : "Send reply"}</button>
-      <button type="button" className="btn btn-sm" disabled={disabled || !!busy} onClick={() => void send("plan")}>{busy === "plan" ? "Asking for the plan…" : "Plan it"}</button>
-      <small>Plan it ends the conversation: the agent writes the plan from what you agreed, and you approve it before any work starts.</small>
+      {!ideate && <button type="button" className="btn btn-sm" disabled={disabled || !!busy} onClick={() => void send("plan")}>{busy === "plan" ? "Asking for the plan…" : "Plan it"}</button>}
+      <small>{ideate ? "Cancel the run when you have the tasks you want." : "Plan it ends the conversation: the agent writes the plan from what you agreed, and you approve it before any work starts."}</small>
     </div>
   </DecisionCard>;
 }

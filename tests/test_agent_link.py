@@ -718,6 +718,15 @@ def test_manual_control_round_trip_over_the_link(client):
         assert context["run_token"] in context["text"] and "/home/davin/wt/task" in context["text"]
         detail = client.get(f"/api/v1/remotea/runs/{run_id}").json()
         assert detail["state"] == "needs_you" and detail["state_reason"] == "plan_approval"
+        # The host's assistant sees the run over the same link (link_lookup.py), read-only and never acked.
+        ws.send_json(frame("lookup.request", req_id="look-1", what="runs"))
+        runs = ws.receive_json()
+        assert runs["t"] == "lookup.response" and runs["req_id"] == "look-1" and runs["ok"]
+        assert [(r["id"], r["task"]["title"], r["state"]) for r in runs["data"]["runs"]] == [
+            (run_id, "Wire the run drawer", "needs_you")]
+        ws.send_json(frame("lookup.request", req_id="look-2", what="run", run_id=run_id))
+        one = ws.receive_json()
+        assert one["ok"] and one["data"]["run"]["id"] == run_id and one["data"]["run"]["reason_text"]
         put(ws, "turn", tool="claude_code", provider="claude", surf=surf, incarnation=1, run_id=run_id,
             generation=1, provider_session_id="sess-c", provider_turn_id="planning-0", root=True, seq=0,
             text="The plan is ready for approval.", source="hook")
@@ -1022,3 +1031,35 @@ def test_rescan_needs_the_hosts_worktrees_scan_capability(client):
         host_id = hello(ws, caps=C_CAPS)["host_id"]
         refused_scan = client.post(f"/api/v1/remotea/hosts/{host_id}/rescan")
     assert refused_scan.status_code == 409 and refused_scan.json()["error"]["code"] == "HOST_TOO_OLD"
+
+
+def test_the_hosts_assistant_reads_tasks_and_needs_you_over_the_link(client):
+    token = enable(client)["token"]
+    for n, title in enumerate(("Draft the pricing page", "Draft the onboarding email", "Pay the invoice")):
+        made = client.post("/api/v1/commands", json={"command_id": f"c-look-{n}", "tool": "task.create",
+                                                     "arguments": {"title": title}})
+        assert made.status_code == 200, made.text
+    done = made.json()["data"]
+    closed = client.post("/api/v1/commands", json={"command_id": "c-look-done", "tool": "task.complete",
+                                                   "arguments": {"task_id": done["id"], "expected_revision": done["revision"]}})
+    assert closed.status_code == 200, closed.text
+    with connect(bearer(token)) as ws:
+        welcome = hello(ws, caps=C_CAPS + ["lookup"])
+        assert "lookup" in welcome["caps"]
+
+        def ask(**values):
+            ws.send_json(frame("lookup.request", req_id=f"r{next(frames)}", **values))
+            reply = ws.receive_json()
+            assert reply["t"] == "lookup.response"
+            return reply
+
+        drafts = ask(what="tasks", query="draft")
+        assert drafts["ok"] and drafts["data"]["total"] == 2
+        assert sorted(t["title"] for t in drafts["data"]["tasks"]) == ["Draft the onboarding email", "Draft the pricing page"]
+        assert [t["title"] for t in ask(what="tasks", status="done")["data"]["tasks"]] == ["Pay the invoice"]
+        assert ask(what="tasks", status="all", limit=1)["data"]["total"] == 3
+        waiting = ask(what="needs_you")
+        assert waiting["ok"] and waiting["data"]["total"] == 0 and "control_approve" not in waiting["data"]["next"]
+        missing = ask(what="run", run_id="00000000-0000-0000-0000-000000000000")
+        assert not missing["ok"] and missing["error"]
+        assert not ask(what="run")["ok"]

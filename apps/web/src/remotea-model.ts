@@ -228,7 +228,10 @@ export type Run = {
   direction?: { brief: { reading: string; approach: string; leaves_alone: string; questions: string[] } | null;
     answer: string | null; answered_at: string | null; accepted_at: string | null; open: boolean } | null;
   /** Brainstorm (run_brainstorm.py): the run opened as a conversation; `open` until the owner says "plan it". */
-  brainstorm?: { open: boolean; turns: number; started_at: string | null; ended_at: string | null; ended_by: string | null } | null;
+  /** Ideate (run_ideas.py): the ideas read from the agent's messages; `task_id` once the owner made one a task. */
+  ideas?: { state: "reading" | "ready" | "unavailable" | null; read_seq: number | null;
+    items: { id: string; title: string; summary: string; why: string; size: "small" | "medium" | "large" | "unknown"; task_id?: string }[] } | null;
+  brainstorm?: { open: boolean; kind?: "brainstorm" | "ideate"; turns: number; started_at: string | null; ended_at: string | null; ended_by: string | null } | null;
   /** Compound (run_learnings.py): what this run wrote down for later runs in its repository; `state` null until looked at. */
   learning?: { state: "kept" | "confirmed" | "none" | "unavailable" | null;
     entry: { id: string; kind: string; title: string; applies_when: string; learning: string; confirmations: number } | null } | null;

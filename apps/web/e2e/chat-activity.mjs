@@ -64,7 +64,8 @@ try{
  await expect.poll(async()=>page.evaluate(async()=>{
    const work=(await(await fetch("/api/v1/work")).json()).items;
    return work.filter(w=>w.request==="Add a task to bring the packing checklist tomorrow").length;
- })).toBe(1);
+ // Longer than the default five seconds: on a loaded CI runner the send has twice taken longer to commit.
+ }),{timeout:30000,message:"the sent draft to become a work item"}).toBe(1);
  await makeDraft("Actually never mind, I need to think about this");
  await expect(recovered).toBeVisible();
  await recovered.getByRole("button",{name:"Discard",exact:true}).click();

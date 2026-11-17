@@ -263,3 +263,40 @@ def test_a_real_agent_talks_a_vague_task_through_and_plans_when_told(stack):
     except BaseException:
         explain(stack, eri, host)
         raise
+
+
+def test_a_real_agent_proposes_ideas_and_one_becomes_a_task(stack, monkeypatch):
+    """Ideate (run_ideas.py): ideas for a repository, read into a list, and a task made from one."""
+    from jarvis import run_ideas
+
+    monkeypatch.setattr(run_ideas, "enabled", lambda: True)
+    real_reader = bool(get_settings().openai_api_key)
+    eri, proxy, host, host_id = boot(stack)
+    try:
+        setup = new_task("Set up the scratch repository")
+        target = save_target(eri, host, host_id, setup)
+        target_id = target.get("id") or task_row(setup).execution_target_id
+        run = eri.post("/api/v1/remotea/ideas", {"topic": "Ways to make this greeting module more useful to someone who "
+                                                          "imports it", "execution_target_id": target_id, "model": "sonnet"})
+        run_id = run["id"]
+        until(lambda: (run_state(run_id).state, run_state(run_id).reason) == ("needs_you", "brainstorm"), PLAN,
+              "the agent's ideas", interval=1)
+        shown = eri.get(f"/api/v1/remotea/runs/{run_id}")
+        said = max((t for t in shown["turns"] if t.get("role") != "user" and t["text"].strip()), key=lambda t: t["seq"])["text"]
+        print(f"\nreal agent's ideas:\n{said}\n")
+        # The local API process has no model key, so it does not queue the reading itself; queue it as it would.
+        with session_scope() as db:
+            job = run_ideas.turn_ended(db, db.get(AgentRun, run_id))
+        assert job, "the ideas were not queued for reading"
+        scripted = run_ideas.Answer(ideas=[run_ideas.Idea(title="Scripted idea", summary="s", why="w", size="small")])
+        run_ideas.process(job, model=None if real_reader else (lambda body: scripted))
+        ideas = eri.get(f"/api/v1/remotea/runs/{run_id}")["ideas"]
+        print(f"read as ({'real' if real_reader else 'scripted'} reader): {json.dumps(ideas['items'], indent=1)}")
+        assert ideas["state"] == "ready" and len(ideas["items"]) >= 2, ideas
+        made = eri.post(f"/api/v1/remotea/runs/{run_id}/ideas/tasks", {"idea_ids": [ideas["items"][0]["id"]]})["created"]
+        assert task_row(made[0]["task_id"]).title == ideas["items"][0]["title"]
+        assert not host.commits(), "an ideas session changes no code"
+        eri.post(f"/api/v1/remotea/runs/{run_id}/stop", {"mode": "kill"})
+    except BaseException:
+        explain(stack, eri, host)
+        raise

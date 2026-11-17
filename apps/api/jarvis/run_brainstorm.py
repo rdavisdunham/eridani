@@ -32,8 +32,14 @@ def is_open(run) -> bool:
     return bool(state(run).get("open"))
 
 
-def begin(run):
-    run.sync_state = {**(run.sync_state or {}), "brainstorm": {"open": True, "started_at": now().isoformat(), "turns": 0}}
+def kind(run) -> str:
+    """`brainstorm` (talk a task through, then plan) or `ideate` (ideas for a repository, then tasks: run_ideas.py)."""
+    return state(run).get("kind") or "brainstorm"
+
+
+def begin(run, kind="brainstorm"):
+    run.sync_state = {**(run.sync_state or {}), "brainstorm": {
+        "open": True, "kind": kind, "started_at": now().isoformat(), "turns": 0}}
 
 
 def close(run, by):
@@ -53,6 +59,10 @@ def turn_ended(db, run) -> bool:
     run.sync_state = {**(run.sync_state or {}), "brainstorm": {**value, "turns": int(value.get("turns") or 0) + 1}}
     if run.state != "needs_you":
         coordinator.transition(db, run, "needs_you", reason=REASON)
+    if kind(run) == "ideate":
+        from . import run_ideas
+
+        run_ideas.turn_ended(db, run)  # Read what the agent just said for the ideas it proposes.
     return True
 
 
@@ -65,6 +75,8 @@ def plan_it(db, run, *, actor):
     coordinator.ensure_eridani_control(run)
     if not is_open(run):
         raise DomainError("INVALID_STATE", "This run has no open conversation to plan from.", 409)
+    if kind(run) == "ideate":
+        raise DomainError("INVALID_STATE", "An ideas session has nothing to plan: make tasks from the ideas you want.", 409)
     if run.state not in ("needs_you", "planning", "interviewing"):
         raise DomainError("INVALID_STATE", f"A run that is {run.state} cannot start planning.", 409)
     close(run, "owner")
@@ -80,5 +92,5 @@ def public(run):
     value = state(run)
     if not value:
         return None
-    return {"open": bool(value.get("open")), "turns": int(value.get("turns") or 0),
+    return {"open": bool(value.get("open")), "kind": value.get("kind") or "brainstorm", "turns": int(value.get("turns") or 0),
             "started_at": value.get("started_at"), "ended_at": value.get("ended_at"), "ended_by": value.get("ended_by")}

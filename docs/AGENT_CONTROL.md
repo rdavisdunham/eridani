@@ -716,7 +716,8 @@ database, the API with a stand-in for the worker (`tests/fixtures/full_stack_acc
 judge models, the supervisor's sweeps), and a remotea server with the scripted agent. `apps/web/e2e/full-stack.mjs`
 then drives the web app: the route on a task and changing it, a run started from the Run dialog that stops on the
 direction check and continues after one answer, and auto-start switched on in Settings followed by a labelled task
-that runs by itself, and a run started with "Talk it through" that takes a reply and plans on Plan it. Screenshots
+that runs by itself, a run started with "Talk it through" that takes a reply and plans on Plan it, and an ideas
+session whose ideas are listed and one made into a task. Screenshots
 and `evidence.json` land in `artifacts/full-stack/`.
 
 ```sh
@@ -896,6 +897,27 @@ works with any harness.
 - State: `run.sync_state["brainstorm"] = {open, started_at, turns, ended_at, ended_by}`; the run carries
   `brainstorm: {open, turns, started_at, ended_at, ended_by}` (null for a run that did not brainstorm). The run page
   shows a "Talking it through" card while it is open: the agent's latest message, a reply box and Plan it.
+
+## Ideate
+
+`run_ideas.py`: ideas for a repository before any task exists, and tasks made from the ones the owner picks
+(docs/END_TO_END_UPGRADE_PLAN.md, phase 1b). Modelled on Compound Engineering's `ce-ideate`; built into Eridani on the
+brainstorm conversation, so it needs no new agent tool and works with any harness.
+
+- **Start.** `POST /remotea/ideas {topic, execution_target_id | (host_id, host_target), harness?, model?}` (the remotea
+  page's New session → Get ideas). Eridani makes a holding task "Ideas: <topic>" (route `human`, so the readiness
+  pass and auto-start leave it alone) and starts a run with `StartInput.ideate`: a brainstorm conversation of kind
+  `ideate` (`run.brainstorm.kind`).
+- **The agent** (`agent_prompts.ideate`) reads the code, thinks of many candidates, rejects most, and presents three
+  to seven survivors ranked, each with what it is, why, and a rough size, then names what it rejected and asks one
+  question. It changes no code and submits no plan. The owner steers with ordinary replies.
+- **The list.** Each time the agent's turn ends, a worker job (`run_ideas`, cost bucket `run_ideas`) reads its
+  message into `run.ideas = {state, items: [{id, title, summary, why, size, task_id?}], read_seq}`. A message that
+  proposes nothing leaves the list as it was; a new list replaces the old one, except ideas already made into
+  tasks, which stay.
+- **Tasks.** `POST /remotea/runs/{id}/ideas/tasks {idea_ids}` makes one ordinary task per chosen idea in the same
+  repository, with the idea's summary, reason and size as its notes. Choosing an idea twice makes one task. "Plan
+  it" is refused for an ideas session (`INVALID_STATE`); the owner cancels the run when done.
 
 ## Compound
 

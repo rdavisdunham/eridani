@@ -121,7 +121,7 @@ def seed_reviews(user: User):
     with session_scope() as db:
         structure.ensure(db,user.owner_id)
         field=db.get(FieldUnderstanding,(user.owner_id,"type:client"))
-        field.status="needs_input";field.questions=["Does Client mean a company or a person?"];field.revision+=1
+        field.status="needs_input";field.questions=["Does Client mean a company or a person?"];field.deferred_until=None;field.revision+=1
         memories=[]
         for name in ("Hayes","Haze"):
             source=capture_source(db,user.owner_id,"My cat is "+name,str(uuid4()),explicit=True)

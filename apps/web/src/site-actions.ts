@@ -16,6 +16,7 @@ export const views = [
   "remotea",
   "meetings",
   "person",
+  "needs",
 ] as const;
 export const editorKinds = [
   "task",

@@ -145,11 +145,12 @@ def test_push_and_in_app_notifications_open_the_same_place():
             "activity": {"view": "tasks", "activity": "1"},
             "today": {"view": "tasks", "tab": "today"},
             "notifications": {"view": "notifications"},
+            "needs": {"view": "needs"},
         }[opened["open"]]
         assert query == expected, case["name"]
     # Every target.view a notification is created with has a case.
     creators = "".join((ROOT / "apps/api/jarvis" / f).read_text()
-                       for f in ("notices.py", "run_coordinator.py", "context/notices.py"))
+                       for f in ("notices.py", "run_coordinator.py", "context/notices.py", "needs_you.py"))
     views = set(re.findall(r'target=\{\s*"view":\s*"([a-z_]+)"', creators))
     assert "meetings" in views, "context notices parsed"
     assert views, "notification target parser"

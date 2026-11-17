@@ -295,7 +295,8 @@ export type View =
   | "settings"
   | "remotea"
   | "meetings"
-  | "person";
+  | "person"
+  | "needs";
 export interface ChatMessage {
   id: string;
   native_id?: string;

@@ -47,6 +47,12 @@ export function RoutingReviewPanel(){
 // domain.SettingsUpdate notify_min_priority / digest_cadence.
 const NOTIFY_PRIORITIES=[["low","Everything"],["normal","Normal priority and up"],["high","High priority and urgent"],["urgent","Urgent only"]] as const;
 const DIGEST_CADENCES=[["hourly","Hourly"],["every_3_hours","Every 3 hours"],["daily","Daily, at the summary hour"],["off","Off"]] as const;
+/** The summary times as typed ("9:00, 17:00"), as HH:MM values; null when one is not a time of day. */
+export function summaryTimes(text:string):string[]|null{
+ const parts=text.split(",").map(s=>s.trim()).filter(Boolean);const out:string[]=[];
+ for(const part of parts){const m=/^(\d{1,2}):(\d{2})$/.exec(part);if(!m||Number(m[1])>23||Number(m[2])>59)return null;out.push(m[1].padStart(2,"0")+":"+m[2]);}
+ return out.length<=6?[...new Set(out)]:null;
+}
 export function NotificationPreferences(){
  const [p,setP]=useState<Record<string,unknown>|null>(null);const {run,busy,error}=useStructureActions();
  useEffect(()=>{api<{preferences:Record<string,unknown>}>("/bootstrap").then(r=>setP(r.preferences)).catch(()=>{});},[]);
@@ -59,6 +65,8 @@ export function NotificationPreferences(){
   <SettingRow label="Quiet between" hint="Alerts wait until quiet time ends."><input aria-label="Quiet starts" type="time" defaultValue={String(p.quiet_start)} onBlur={e=>void save({quiet_start:e.target.value}).catch(()=>{})}/><span className="range-sep">to</span><input aria-label="Quiet ends" type="time" defaultValue={String(p.quiet_end)} onBlur={e=>void save({quiet_end:e.target.value}).catch(()=>{})}/></SettingRow>
   <SettingRow as="label" className="switch-row" label="Daily summary" hint="One message with the day's deadlines and plans.">{toggle("morning_summary")}</SettingRow>
   <SettingRow label="Summary hour" hint="Hour of the day, 0 to 23."><input aria-label="Summary hour" type="number" min={0} max={23} defaultValue={Number(p.morning_hour)} onBlur={e=>void save({morning_hour:Number(e.target.value)}).catch(()=>{})}/></SettingRow>
+  <SettingRow as="label" className="switch-row" label="Needs you summary" hint="At these times, one message listing what is waiting for you (agent runs, proposals, meetings, questions), only when something is. Problems that block a run still alert you straight away.">{toggle("needs_you_summary")}</SettingRow>
+  {Boolean(p.needs_you_summary)&&<SettingRow label="Summary times" hint="Up to six times of day, separated by commas, for example 09:00, 13:00, 17:00."><input aria-label="Needs you summary times" type="text" defaultValue={((p.needs_you_times as string[]|undefined)??[]).join(", ")} onBlur={e=>{const times=summaryTimes(e.target.value);if(times)void save({needs_you_times:times}).catch(()=>{});}}/></SettingRow>}
   <SettingRow label="Interrupt me for" hint="Lower-priority alerts wait for the digest. Several alerts due at once arrive as one bundle."><select aria-label="Minimum priority to interrupt" disabled={busy} value={String(p.notify_min_priority??"low")} onChange={e=>void save({notify_min_priority:e.target.value}).catch(()=>{})}>{NOTIFY_PRIORITIES.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></SettingRow>
   <SettingRow label="Digest" hint="How often waiting lower-priority alerts arrive together. Off keeps them on the Notifications page only."><select aria-label="Digest cadence" disabled={busy} value={String(p.digest_cadence??"hourly")} onChange={e=>void save({digest_cadence:e.target.value}).catch(()=>{})}>{DIGEST_CADENCES.map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></SettingRow>
  </SettingsGroup>;

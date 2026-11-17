@@ -484,6 +484,10 @@
       "feature": "site_controls"
     },
     {
+      "name": "needs_you",
+      "feature": "queue"
+    },
+    {
       "name": "note_extract",
       "feature": "note_tasks"
     },
@@ -1758,6 +1762,13 @@
       "handler": "run_memory_review",
       "source": "apps/api/jarvis/api.py",
       "feature": "memory_dream"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/needs-you",
+      "handler": "needs_you_list",
+      "source": "apps/api/jarvis/api.py",
+      "feature": "queue"
     },
     {
       "method": "GET",

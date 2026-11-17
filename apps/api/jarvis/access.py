@@ -71,6 +71,8 @@ PERSONAL_PATHS = (
     "/api/v1/bug-reports",
     # Set up with Dani reads personal memory and designs the owner's own organization.
     "/api/v1/setup",
+    # The one "Needs you" list gathers personal Questions, memory reviews and agent runs.
+    "/api/v1/needs-you",
 )
 
 

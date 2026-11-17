@@ -4,7 +4,7 @@ import { noticeDestination, openNotice, type NoticeOpeners } from "../notice-tar
 import type { Notice } from "../types";
 
 const openers = (): NoticeOpeners & Record<string, ReturnType<typeof vi.fn>> =>
-  ({ run: vi.fn(), meetings: vi.fn(), task: vi.fn(), activity: vi.fn(), today: vi.fn() });
+  ({ run: vi.fn(), meetings: vi.fn(), task: vi.fn(), activity: vi.fn(), today: vi.fn(), needs: vi.fn() });
 
 describe("the Notifications page's Open", () => {
   it("opens a meeting review, or the meetings list without a source", () => {

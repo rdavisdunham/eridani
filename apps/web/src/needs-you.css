@@ -1,0 +1,8 @@
+.needs-you-page{max-width:850px}.needs-you-page>h2{font-size:22px}.needs-you-summary{color:var(--muted);font-size:14px;margin:8px 0 16px}
+.needs-you-card{padding:18px 20px;border:1px solid var(--line);border-radius:12px;margin:12px 0;background:var(--surface);overflow-wrap:anywhere}
+.needs-you-card.urgent{border-left:4px solid var(--danger,#c0392b)}
+.needs-you-card h3{font-size:16px;line-height:1.4;margin:10px 0 4px}.needs-you-card p{font-size:13px;margin:6px 0}
+.needs-you-title{color:var(--muted)}.needs-you-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.needs-you-evidence{font-size:12px;color:var(--muted);margin:8px 0;padding-left:18px;white-space:pre-wrap}
+.needs-you-urgent{color:var(--danger,#c0392b)}
+@media(max-width:600px){.needs-you-card{padding:14px}.needs-you-card .question-actions .btn{flex:1 1 140px}}

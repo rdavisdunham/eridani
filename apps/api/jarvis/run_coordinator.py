@@ -162,7 +162,6 @@ REASONS = {
     "rate_limited": "The agent's model ran out of usage, or the provider is refusing requests for now.",
     "auth_expired": "The agent is signed out on that computer.",
     "agent_errored": "The agent's session reported an error and stopped.",
-    "model_fallback": "The run carried on under another model.",
     "turn_cap": "The run reached its turn cap.",
     "question_timed_out": "The question timed out here; answer it in the terminal.",
     "no_plan": "The agent ended its planning turn without asking questions or submitting a plan.",
@@ -190,6 +189,7 @@ REASONS = {
     "merge_blocked": "Auto-merge stopped: GitHub would not merge the pull request.",
     # Working states: what just happened, so the page never shows a raw reason token.
     "start": "Starting the agent.",
+    "model_fallback": "The run carried on under another model.",
     "started": "The agent is up; planning.",
     "interview_answered": "You answered the agent's questions; it is writing the plan.",
     "plan_submitted": "The agent submitted its plan.",

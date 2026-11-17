@@ -303,3 +303,33 @@ def test_choosing_a_repository_makes_the_pass_look_again(on, host):
     row = saved(made["id"])
     assert row.readiness["state"] == "ready" and row.verify["verify_id"] == "quick"
     assert "no repository is chosen" not in row.readiness["reasons"][0]
+
+
+def test_route_labels_are_changed_in_settings_and_tasks_that_carry_them_are_looked_at_again(on, host, client):
+    assert client.get("/api/v1/remotea/route-labels").json() == {
+        "auto_labels": ["ai-assignable"], "human_labels": ["human-only"],
+        "defaults": {"auto_labels": ["ai-assignable"], "human_labels": ["human-only"]}}
+    mine = task("Decide the pricing", tags=["Client Call"], success_criteria=[{"text": "Agreed"}])
+    other = task("Rename a helper", tags=["chore"], success_criteria=[{"text": "Renamed"}])
+    chosen = task("Mine by choice", tags=["client call"], success_criteria=[{"text": "Done"}])
+    for job in jobs()[-3:]:
+        readiness.process(job, model=answer())
+    with session_scope() as db:
+        control_task = db.get(Task, chosen["id"])
+        control_task.run_route, control_task.readiness = "direction", {**control_task.readiness, "route_by": "owner"}
+    assert saved(mine["id"]).run_route == "direction"
+
+    out = client.put("/api/v1/remotea/route-labels", json={"auto_labels": [" AI-Assignable ", "ai-assignable"],
+                                                           "human_labels": ["human-only", "Client Call"]})
+    assert out.status_code == 200 and out.json()["human_labels"] == ["human-only", "client call"]
+    assert out.json()["auto_labels"] == ["ai-assignable"]
+    # Only the task that carries the changed label is looked at again; the owner's own route stays.
+    assert saved(mine["id"]).readiness["state"] == "stale" and saved(other["id"]).readiness["state"] != "stale"
+    assert saved(chosen["id"]).readiness["state"] != "stale"
+    with session_scope() as db:
+        readiness.sweep(db)
+    readiness.process(jobs()[-1], model=never)
+    assert saved(mine["id"]).run_route == "human"
+
+    both = client.put("/api/v1/remotea/route-labels", json={"auto_labels": ["x"], "human_labels": ["X"]})
+    assert both.status_code == 400 and "both lists" in both.text

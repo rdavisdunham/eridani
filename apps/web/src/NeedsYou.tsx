@@ -20,11 +20,11 @@ export function NeedsYouPage({ refresh, onOpen }: { refresh: number; onOpen: (op
     events.forEach(e => window.addEventListener(e, load));
     return () => events.forEach(e => window.removeEventListener(e, load));
   }, [load]);
-  if (!value) return <section className="needs-you-page" aria-label="Needs you"><h2>Needs you</h2>
+  // The shell's page heading names the page; the section keeps the name for assistive tech and tests.
+  if (!value) return <section className="needs-you-page" aria-label="Needs you">
     {error ? <p role="alert" className="work-error">{error}</p> : <p role="status">Loading…</p>}</section>;
   const missing = unavailableLine(value.unavailable);
   return <section className="needs-you-page" aria-label="Needs you">
-    <h2>Needs you</h2>
     <p className="needs-you-summary">{needsYouSummary(value)}</p>
     {missing && <p className="footnote" role="note">{missing}</p>}
     {error && <p role="alert" className="work-error">{error}</p>}

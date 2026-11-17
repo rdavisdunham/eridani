@@ -2815,7 +2815,7 @@ export default function App() {
                 </Popover>
               </div>
             </div>}
-            {!isTaskTab(view) && view !== "settings" && view !== "questions" && view !== "remotea" && view !== "meetings" && view !== "person" && view !== "notes" && view !== "organize" && view !== "calendar" && <label className="page-search"><Search size={16}/><input aria-label={searchLabel} placeholder={searchLabel + "…"} value={query} onChange={e => setQuery(e.target.value)}/></label>}
+            {!isTaskTab(view) && view !== "settings" && view !== "questions" && view !== "needs" && view !== "remotea" && view !== "meetings" && view !== "person" && view !== "notes" && view !== "organize" && view !== "calendar" && <label className="page-search"><Search size={16}/><input aria-label={searchLabel} placeholder={searchLabel + "…"} value={query} onChange={e => setQuery(e.target.value)}/></label>}
             {!boot.workspace?.id && dashboard && <Onboarding compact established={setupEstablished(organization)} onChanged={()=>void load()} onTalk={startSetup} setup={setupSession} voiceAvailable={!!boot.capabilities.voice}/>}
             {(dashboard||isTaskTab(view))&&boot.workspace?.role!=="viewer"&&<div className="quick-capture-launch"><QuickCapture today={today} onCreated={task=>{void load();openTaskCard(task);}}/></div>}
             {dashboard && boot && <Today tasks={tasks} finishedTasks={mergeFinishedTasks(dailyFinished, tasks)} schedules={schedules} today={today} zone={boot.preferences.timezone} busy={busy} canEdit={boot.workspace?.role!=="viewer"}

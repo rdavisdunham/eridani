@@ -21,6 +21,7 @@ from . import agent_receipts as receipts
 from . import agent_retention as retention
 from . import agent_sessions as sessions
 from . import run_coordinator as coordinator
+from . import target_setup
 from .auth import Identity, authenticate
 from .config import get_settings
 from .db import session_scope
@@ -807,6 +808,29 @@ def targets(user: User):
         adverts = control.advertised(db, user.owner_id)
         index = control.advert_index(adverts)
         return {"items": [control.public_target(t, index) for t in rows], "advertised": adverts}
+
+
+@router.post("/target-setup")
+def start_target_setup(body: target_setup.SetupInput, user: User):
+    """Ask the host to read a repository and propose a target (target_setup.py). Nothing runs or is saved yet."""
+    with session_scope() as db:
+        writable(db, user)
+        return target_setup.propose(db, user.owner_id, body)
+
+
+@router.get("/target-setup/{op_id}")
+def target_setup_status(op_id: str, user: User):
+    with session_scope() as db:
+        gated(db, user)
+        return target_setup.status(db, user.owner_id, op_id[:100])
+
+
+@router.post("/target-setup/{op_id}/confirm")
+def target_setup_confirm(op_id: str, user: User):
+    """The owner saw the proposal: the host tries its check in the sandbox, keeps it if it passes, and saves."""
+    with session_scope() as db:
+        writable(db, user)
+        return target_setup.confirm(db, user.owner_id, op_id[:100])
 
 
 @router.post("/targets")

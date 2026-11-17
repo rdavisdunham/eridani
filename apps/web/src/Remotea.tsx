@@ -32,6 +32,7 @@ import { AutoStartSettings } from "./AutoStartSettings";
 import { modelOptions, plannerDefaultLabel, type ModelOption } from "./RunModels";
 import { PlannerModelSetting } from "./PlannerModelSetting";
 import { RouteLabelsSettings } from "./RouteLabelsSettings";
+import { TargetSetupSettings } from "./TargetSetupSettings";
 import { LearningsSettings } from "./LearningsSettings";
 import { focusTarget } from "./run-restart";
 import { anchoredScrollTop, earlierLine, mergeDetail, nextOffset, scrollAnchor, type FullTurn } from "./remotea-model";
@@ -325,6 +326,7 @@ export function RemoteaSettings({ readOnly, onChanged }: { readOnly: boolean; on
       </SettingRow>
       <PlannerModelSetting value={status.planner_model ?? "strongest"} readOnly={readOnly} busy={busy}
         onChange={value => void change("/remotea/planner-model", { value })}/>
+      <TargetSetupSettings hosts={status.hosts} readOnly={readOnly}/>
       <RouteLabelsSettings readOnly={readOnly}/>
       <AutoStartSettings readOnly={readOnly}/>
       <LearningsSettings readOnly={readOnly}/>

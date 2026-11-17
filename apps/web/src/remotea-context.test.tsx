@@ -2,8 +2,9 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
-import { api } from "./api";
-import { RemoteaProvider, useRemotea, useRemoteaActions, type RemoteaActions, type RemoteaData } from "./remotea-context";
+import { api, postAction } from "./api";
+import { respondDecision } from "./RunWorkflow";
+import { decisionList, RemoteaProvider, useRemotea, useRemoteaActions, type RemoteaActions, type RemoteaData } from "./remotea-context";
 
 vi.mock("./api", () => ({ api: vi.fn(), flushActions: vi.fn(), postAction: vi.fn() }));
 vi.mock("./RunWorkflow", () => ({ respondDecision: vi.fn(), flushDrafts: vi.fn() }));
@@ -44,6 +45,31 @@ it("coalesces overlapping run refreshes and discards results after disabling the
     expect(data.status).toBeNull();
     expect(data.activeRuns).toEqual([]);
     expect(api).toHaveBeenCalledTimes(8);
+  } finally {
+    await act(async () => root.unmount());
+    host.remove();
+  }
+});
+
+it("reads the open decisions under the key the server sends, so Confirm answers through them", async () => {
+  expect(decisionList({ decisions: [{ id: "a" } as never] }).map(d => d.id)).toEqual(["a"]);
+  expect(decisionList({ items: [{ id: "b" } as never] }).map(d => d.id)).toEqual(["b"]);
+  expect(decisionList({})).toEqual([]);
+  const proposal = { id: "p1", kind: "control", revision: 1, status: "pending", actions: ["confirm", "decline"] };
+  vi.mocked(api).mockImplementation(async url => url === "/remotea/status" ? { connected: true }
+    : url === "/remotea/decisions" ? { decisions: [proposal] } : { items: [] });
+  vi.mocked(respondDecision).mockResolvedValue({ result: { run: null } } as never);
+  let actions!: RemoteaActions;
+  function Probe() { actions = useRemoteaActions(); return null; }
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  try {
+    await act(async () => root.render(<RemoteaProvider><Probe/></RemoteaProvider>));
+    await act(async () => actions.setEnabled(true));
+    await act(async () => { await actions.decide("p1", "confirm"); });
+    expect(respondDecision).toHaveBeenCalledWith(expect.objectContaining({ id: "p1" }), "confirm", {});
+    expect(postAction).not.toHaveBeenCalled();
   } finally {
     await act(async () => root.unmount());
     host.remove();

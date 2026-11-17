@@ -844,7 +844,8 @@ older `PROMPT_VERSION` are looked at again by the sweep (routes the owner chose 
 
 Labels are the task's tags and its Linear labels, matched case-insensitively against the owner setting
 `run_routes` (`{"auto_labels": [...], "human_labels": [...]}`; defaults `ai-assignable` and `human-only`), so no
-label name is built in. There is no settings screen for it yet. Whether the target has CI is not checked yet.
+label name is built in. Settings has both lists (`GET`/`PUT /remotea/route-labels`); a name cannot be in both, and
+changing a list marks the open tasks that carry a changed label for another look (a route the owner chose stays). Whether the target has CI is not checked yet.
 
 A route the owner sets (`task.update` with `run_route`; the select on the task's Run control) is recorded as
 `readiness.route_by = "owner"` and never replaced; setting it to null hands it back. The pass writes without

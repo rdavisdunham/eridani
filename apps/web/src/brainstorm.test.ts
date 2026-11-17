@@ -64,3 +64,11 @@ describe("model choice: the planning model setting and a run that changed model"
       .toBe("Changed model: claude-fable-5-2 could not go on (its usage ran out), so this run carries on under claude-opus-5-5.");
   });
 });
+
+describe("route labels setting", () => {
+  it("reads what was typed as label names", async () => {
+    const { parseLabels } = await import("./RouteLabelsSettings");
+    expect(parseLabels(" AI-Assignable, agent ok ,, ai-assignable")).toEqual(["ai-assignable", "agent ok"]);
+    expect(parseLabels("")).toEqual([]);
+  });
+});

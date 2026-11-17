@@ -126,6 +126,47 @@ def profile(db, owner) -> dict:
             for key, default in DEFAULT_PROFILE.items()}
 
 
+MAX_ROUTE_LABELS = 20
+
+
+def clean_labels(values) -> list[str]:
+    """Label names as they are matched: trimmed, lower-cased, once each, in the order given."""
+    return list(dict.fromkeys(str(v).strip().lower()[:40] for v in values or [] if str(v).strip()))[:MAX_ROUTE_LABELS]
+
+
+def public_profile(db, owner) -> dict:
+    """For Settings: the labels in force and the defaults they replace."""
+    return {**profile(db, owner), "defaults": DEFAULT_PROFILE}
+
+
+def save_profile(db, owner, auto_labels, human_labels) -> dict:
+    """Save the owner's route labels. A label cannot mean both routes (human wins when a task carries both, so the
+    same name in both lists would never start anything): it is refused. Open tasks that carry a label whose meaning
+    changed are looked at again by the next sweep; a route the owner chose stays."""
+    from .domain import DomainError, emit
+
+    new = {"auto_labels": clean_labels(auto_labels), "human_labels": clean_labels(human_labels)}
+    both = sorted(set(new["auto_labels"]) & set(new["human_labels"]))
+    if both:
+        raise DomainError("INVALID_ARGUMENT", f"\u201c{both[0]}\u201d is in both lists. A label can mean only one route.")
+    old = profile(db, owner)
+    row = db.get(OwnerSettings, owner, with_for_update=True)
+    if row:
+        row.values = {**row.values, "run_routes": new}
+    else:
+        db.add(OwnerSettings(owner_id=owner, values={"run_routes": new}))
+    changed = {name for key in new for name in set(old[key]) ^ set(new[key])}
+    if changed:
+        for task in db.scalars(select(Task).where(
+                Task.owner_id == owner, Task.archived.is_(False), Task.is_template.is_(False), Task.status.in_(OPEN),
+                Task.readiness["state"].astext.in_(("ready", "needs_target"))).limit(5000)):
+            if (task.readiness or {}).get("route_by") != "owner" and changed & set(labels(task)):
+                task.readiness = {**task.readiness, "state": "stale"}
+    db.flush()
+    emit(db, owner, "settings.changed", owner)
+    return public_profile(db, owner)
+
+
 def labels(task) -> list[str]:
     """The task's tags and its Linear labels, lower-cased."""
     names = [*(task.tags or []), *[(item or {}).get("name") for item in (task.external or {}).get("labels") or []

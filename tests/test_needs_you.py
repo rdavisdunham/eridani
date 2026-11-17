@@ -108,3 +108,44 @@ def test_the_summary_can_be_turned_off_and_its_times_changed(client):
     bad = client.post("/api/v1/commands", json={"command_id": "4c1c6a3e-5b0f-4b55-9a7e-0c2b2d1e9f02", "tool": "settings.update",
                                                 "arguments": {"needs_you_times": ["25:00"]}})
     assert bad.status_code in (400, 422)
+
+
+def test_a_meeting_with_proposals_sends_the_summary_once_between_set_times(host, monkeypatch):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from jarvis.domain import preferences
+
+    with session_scope() as db:
+        zone = ZoneInfo(preferences(db, OWNER)["timezone"])
+    at = datetime(2026, 11, 17, 14, 0, tzinfo=zone)  # Between the 09:00 and 17:00 summaries.
+    ready = []
+
+    def meetings(db, owner, account, device):
+        return [needs_you.item("meeting", f"meeting:{sid}", title, "Review 2 proposals from this meeting",
+                               since=since, source_id=sid) for sid, title, since in ready]
+
+    monkeypatch.setattr(needs_you, "meetings", meetings)
+    with session_scope() as db:
+        assert needs_you.summary(db, OWNER, at) is None  # No meeting: nothing until 17:00.
+    ready += [("m-old", "Monday sync", at - timedelta(hours=9)), ("m-1", "Pricing review", at - timedelta(minutes=50)),
+              ("m-2", "Design crit", at - timedelta(minutes=20))]
+    with session_scope() as db:
+        row = needs_you.summary(db, OWNER, at)
+        # One notice for both new meetings; the one from this morning is left to the set times.
+        assert row.title == "3 things need you" and row.target["meetings"] == ["m-2", "m-1"]
+        assert needs_you.summary(db, OWNER, at + timedelta(minutes=5)) is None  # Already announced.
+    ready.append(("m-3", "Client call", at + timedelta(minutes=10)))
+    with session_scope() as db:
+        assert needs_you.summary(db, OWNER, at + timedelta(minutes=20)) is None  # Too soon after the last one.
+        later = needs_you.summary(db, OWNER, at + timedelta(minutes=40))
+        assert later.target["meetings"] == ["m-3"]
+    ready.append(("m-4", "Retro", at + timedelta(minutes=50)))
+    with session_scope() as db:  # Turned off: only the set times.
+        from uuid import uuid4
+
+        from jarvis.domain import execute
+
+        execute(db, OWNER, str(uuid4()), "settings.update", {"needs_you_after_meetings": False})
+    with session_scope() as db:
+        assert needs_you.summary(db, OWNER, at + timedelta(minutes=90)) is None

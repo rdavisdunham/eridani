@@ -125,6 +125,7 @@ def state(db, user):
         "auto_complete": coordinator.auto_complete(db, user.owner_id),
         "auto_merge": run_merge.auto_default(db, user.owner_id),
         "quiet_bypass": coordinator.quiet_bypass(db, user.owner_id),
+        "planner_model": control.planner_preference(db, user.owner_id),
         "retention_days": retention.window(db, user.owner_id).days,
         "key": bot_access.public(key) if key else None,
         # The MCP key the last setup code carried (its prefix and expiry; never the token).
@@ -250,6 +251,22 @@ def set_auto_merge(body: AutoCompleteInput, user: User):
     with session_scope() as db:
         gated(db, user)
         set_enabled(db, user.owner_id, body.enabled, "remotea_auto_merge")
+        return state(db, user)
+
+
+class PlannerModelInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # "strongest" (the newest Fable the computer offers), "host" (the computer's own default), or a model's id.
+    value: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._:\[\]-]+$")
+
+
+@router.post("/planner-model")
+def set_planner_model(body: PlannerModelInput, user: User):
+    """What planning runs on when a start names no model (agent_control.planning_default). The work itself stays on
+    the computer's default; a run whose planning model runs out of usage moves to that default (run_trouble.py)."""
+    with session_scope() as db:
+        gated(db, user)
+        set_enabled(db, user.owner_id, body.value, control.PLANNER_KEY)
         return state(db, user)
 
 
@@ -1035,10 +1052,13 @@ def model_catalog(user: User):
     with session_scope() as db:
         owner_only(db, user)
         hosts = list(db.scalars(select(AgentHost).where(AgentHost.owner_id == user.owner_id)))
+        prefer = control.planner_preference(db, user.owner_id)
+
         def planning(host, model):
             # What a planner on this host runs on when no model is chosen (agent_control.planning_default).
             catalog = (host.caps or {}).get("model_catalog", [])
-            return bool(model.get("model")) and model.get("model") == control.planning_default(catalog, model.get("harness"))
+            return bool(model.get("model")) and model.get("model") == control.planning_default(
+                catalog, model.get("harness"), prefer)
         return {"models": [{**model, "host_id": host.id, "planning_default": planning(host, model)} for host in hosts
                            for model in (host.caps or {}).get("model_catalog", []) if isinstance(model, dict)],
                 "legacy_hosts": [host.id for host in hosts if "role.options" not in ((host.caps or {}).get("caps") or [])]}

@@ -208,6 +208,11 @@ def learning_public(db, run):
     return for_run(db, run)
 
 
+def trouble_public(run):
+    from .run_trouble import public
+    return public(run)
+
+
 def ideas_public(run):
     from .run_ideas import public
     return public(run)
@@ -222,10 +227,28 @@ PLANNING_ALIASES = {"claude": "fable"}
 PLANNING_MODELS = {"claude": re.compile(r"^claude-fable-(\d+)(?:-(\d+))?$")}
 
 
-def planning_default(catalog, harness):
-    """The model a planner runs on when none was chosen: the newest of the harness's strongest family among those
-    the host offers (Claude: Fable), or None to use the host's default. A choice in the Run dialog, in Dani's
-    control_start or on a reviewer or worker always wins."""
+PLANNER_KEY = "remotea_planner_model"  # Owner setting: "strongest" (default), "host", or a model's id.
+
+
+def planner_preference(db, owner) -> str:
+    """What the owner wants planners to run on when a start names no model (Settings, "Planning model")."""
+    from .models import OwnerSettings
+
+    row = db.get(OwnerSettings, owner)
+    return str((row.values if row else {}).get(PLANNER_KEY) or "strongest")
+
+
+def planning_default(catalog, harness, prefer="strongest"):
+    """The model a planner runs on when none was chosen, or None to use the host's default. `prefer` is the owner's
+    setting: "strongest" is the newest of the harness's strongest family among those the host offers (Claude:
+    Fable); "host" is the host's default; a model's id is that model where the host offers it for this harness
+    (elsewhere the strongest). A choice in the Run dialog, in Dani's control_start or on a reviewer or worker
+    always wins."""
+    if prefer == "host":
+        return None
+    if prefer != "strongest" and any(isinstance(m, dict) and m.get("harness") == harness and m.get("model") == prefer
+                                     for m in catalog or []):
+        return prefer
     family = PLANNING_MODELS.get(harness)
     if family is None:
         return None
@@ -749,7 +772,7 @@ def start_run(db, owner, account_id, body, *, actor, brief="", opening="", resta
     # work itself stays on the host's default unless a worker was named.
     planner_pick = None
     if not body.model and not body.freestyle and restart is None and (managed_start or body.ideate):
-        planner_pick = planning_default(catalog, body.harness)
+        planner_pick = planning_default(catalog, body.harness, planner_preference(db, owner))
     host_default = None
     for spec in [body, body.reviewer, body.worker]:
         if spec and not spec.model:
@@ -1491,6 +1514,12 @@ def reason_detail(db, run):
     """The full text behind the current state, when there is one: the judge's notes for a judge-caused needs_you,
     otherwise the detail recorded with the transition (REASON_TEXT is the one-line version). verify_infra shows the
     host setup action from the verification that could not run."""
+    if run.state_reason in ("rate_limited", "auth_expired", "agent_errored"):
+        from .run_trouble import state as trouble_state
+
+        said = trouble_state(run).get("detail")
+        if said:
+            return said[:300]  # The harness's own words: a usage limit says when it resets.
     if run.state_reason == "verify_infra":
         recent = db.scalars(select(AgentAttempt).where(AgentAttempt.run_id == run.id, AgentAttempt.kind == "verify")
                             .order_by(AgentAttempt.created_at.desc()).limit(5))
@@ -1585,6 +1614,8 @@ def public_run(db, run, *, detail=False, limit=DETAIL_PAGE, offset=0):
         "direction": direction_public(db, run),
         # Brainstorm (run_brainstorm.py): the conversation before the plan, and whether it is still open.
         "brainstorm": brainstorm_public(run),
+        # A failure the agent's own session reported, and a model change made because of one (run_trouble.py).
+        "trouble": trouble_public(run)[0], "model_fallback": trouble_public(run)[1],
         # Ideate (run_ideas.py): the ideas read from the agent's messages, and the tasks made from them.
         "ideas": ideas_public(run),
         # Compound (run_learnings.py): what this run wrote down for later runs in its repository, if anything.
@@ -2501,7 +2532,7 @@ def chosen_target(db, owner, row, choice):
 
 def propose(db, owner, account, tool, args, actor):
     """control_start / control_message from Dani: resolve and validate now, act only after the owner confirms."""
-    work = current_work(db)
+    work, planner = current_work(db), None
     if tool == "control.start":
         task = owned(db, Task, args.task_id or task_by_name(db, owner, args.task), owner)
         arguments, run_id = {"task_id": task.id, "harness": args.harness}, None
@@ -2531,6 +2562,9 @@ def propose(db, owner, account, tool, args, actor):
         target = proposed_target(db, owner, task)
         if target is not None:
             arguments["execution_target_id"] = target.id
+        planner = planner_preview(db, owner, target, args.harness, args.model)
+        if planner and planner["model"]:
+            extras.insert(0, f"{planner['label']} planning")
         summary = f"Start {'Codex' if args.harness == 'codex' else 'Claude Code'} on \u201c{task.title[:200]}\u201d" + (
             f" in {(target.name or target.host_target)[:100]}" if target is not None else "") + (
             " with " + " and ".join(extras) if extras else "")
@@ -2571,12 +2605,36 @@ def propose(db, owner, account, tool, args, actor):
     db.add(row)
     db.flush()
     emit(db, owner, "agent.changed", run_id or row.id)
-    return {**pending_reply(row), **({"offer": offer} if offer else {}), "next": "Nothing was sent yet. " + NEXT}
+    return {**pending_reply(row), **({"offer": offer} if offer else {}), **({"planner": planner} if planner else {}),
+            "next": "Nothing was sent yet. " + NEXT}
 
 
 TALK_OFFER = ("This task has no success criteria and no PRD yet. When you read the summary, also offer to talk it "
               "through with the agent first. If the owner wants that, call control_start again for the same task "
               "with brainstorm true: it replaces this proposal, and they confirm the new one.")
+
+
+def planner_preview(db, owner, target, harness, model):
+    """For a start proposal: the model that will plan, and the others that computer offers, so Dani can say which
+    it is and the owner can ask for another before saying yes. None when the computer has reported no models."""
+    host = db.get(AgentHost, target.host_id) if target is not None and target.host_id else None
+    catalog = [m for m in ((host.caps or {}).get("model_catalog", []) if host else [])
+               if isinstance(m, dict) and m.get("harness") == harness and m.get("model")]
+    if not catalog:
+        return None
+    usual = next((m["model"] for m in catalog if m.get("default") or m.get("is_default") or m.get("isDefault")), None)
+    managed = bool(coordinator.host_cap(db, host.id, "managed.sessions")
+                   and ((host.caps or {}).get("harnesses", {}).get(harness) or {}).get("managed"))
+    chosen = model or (planning_default(catalog, harness, planner_preference(db, owner)) if managed else None) or usual
+    label = lambda name: next((m.get("label") or name for m in catalog if m["model"] == name), name)  # noqa: E731
+    return {"model": chosen, "label": label(chosen) if chosen else None, "chosen_by": "owner" if model else "default",
+            "others": [{"model": m["model"], "label": m.get("label") or m["model"]} for m in catalog if m["model"] != chosen][:8],
+            "say": PLANNER_SAY if not model else None}
+
+
+PLANNER_SAY = ("The summary names the model that will plan. When the owner is speaking, ask in the same breath "
+               "whether that model is fine or they want another, naming one or two of `others`. If they name one, "
+               "call control_start again for the same task with model set to its id: it replaces this proposal.")
 
 
 def unshaped(task) -> bool:

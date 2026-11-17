@@ -267,8 +267,10 @@ def summary_text(value) -> tuple[str, str]:
 
 def summary(db, owner, instant=None):
     """At each of the owner's summary times (`needs_you_times`, local), one notice when anything is waiting: the
-    batch the plan asks for, so non-urgent decisions arrive together instead of one push each. Urgent run
-    problems still notify on their own (run_coordinator.notify). Once per slot; nothing when the list is empty."""
+    batch the plan asks for, so non-urgent decisions arrive together instead of one push each. Between those
+    times, also once after meetings whose proposals are ready (`needs_you_after_meetings`, after_meetings). Urgent
+    run problems still notify on their own (run_coordinator.notify). Once per slot or meeting; nothing when the
+    list is empty."""
     from zoneinfo import ZoneInfo
 
     from .domain import preferences
@@ -280,10 +282,18 @@ def summary(db, owner, instant=None):
         return None
     local = instant.astimezone(ZoneInfo(prefs["timezone"]))
     slot = due_slot(prefs.get("needs_you_times") or [], local)
-    if slot is None:
-        return None
-    key = f"needs_you:{owner}:{local.date().isoformat()}T{slot}"
-    if db.scalar(select(Notification.id).where(Notification.dedup_key == key)):
+    met = []
+    if slot is not None:
+        key = f"needs_you:{owner}:{local.date().isoformat()}T{slot}"
+        if db.scalar(select(Notification.id).where(Notification.dedup_key == key)):
+            return None
+    elif prefs.get("needs_you_after_meetings", True):
+        # After a meeting: its proposals are ready, so the batch goes out now rather than at the next time.
+        met = after_meetings(db, owner, instant)
+        if not met:
+            return None
+        key = f"needs_you:{owner}:after:{met[0]}"
+    else:
         return None
     value = listing(db, owner)
     if not value["total"]:
@@ -291,10 +301,52 @@ def summary(db, owner, instant=None):
     title, body = summary_text(value)
     row = Notification(owner_id=owner, dedup_key=key, category=SUMMARY, title=title, body=body, importance="normal",
                        scheduled_at=instant, eligible_at=instant, created_at=instant,
-                       target={"view": "needs", "keys": [i["key"] for i in value["items"][:50]]})
+                       target={"view": "needs", "keys": [i["key"] for i in value["items"][:50]],
+                               **({"meetings": met} if met else {})})
     db.add(row)
     db.flush()
     return row
+
+
+AFTER_MEETING_HOURS = 6  # A meeting older than this is left to the next set time (and to the first deploy's backlog).
+AFTER_MEETING_QUIET_MINUTES = 30  # No second summary this soon after one; the next scan picks the meeting up.
+
+
+def after_meetings(db, owner, instant) -> list[str]:
+    """Meetings whose proposals are waiting and that no summary has announced yet, newest first; [] when none, or
+    when a summary went out in the last half hour (several meetings ending together make one notice, not several)."""
+    from datetime import timedelta
+
+    from .models import Notification
+
+    cutoff = instant - timedelta(hours=AFTER_MEETING_HOURS)
+    recent = [m for m in meetings(db, owner, None, None) if when(m.get("since")) and when(m["since"]) >= cutoff]
+    if not recent:
+        return []
+    quiet = instant - timedelta(minutes=AFTER_MEETING_QUIET_MINUTES)
+    if db.scalar(select(Notification.id).where(Notification.owner_id == owner, Notification.category == SUMMARY,
+                                               Notification.created_at > quiet).limit(1)):
+        return []
+    announced = set()
+    for target in db.scalars(select(Notification.target).where(
+            Notification.owner_id == owner, Notification.category == SUMMARY,
+            Notification.created_at > instant - timedelta(hours=AFTER_MEETING_HOURS * 2))):
+        announced.update((target or {}).get("meetings") or [])
+    return [m["source_id"] for m in sorted(recent, key=lambda m: when(m["since"]), reverse=True)
+            if m["source_id"] not in announced]
+
+
+def when(value):
+    """An item's `since` as an aware datetime, or None."""
+    from datetime import datetime, timezone
+
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def due_slot(times, local):

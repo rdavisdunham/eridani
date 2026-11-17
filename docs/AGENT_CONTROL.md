@@ -607,6 +607,7 @@ own short transaction.
 | down | `context.response` | `req_id, text` | |
 | up | `bye` | `reason: shutdown\|reconfigured\|probe` | Eridani closes 1000 |
 | down | `bye` | `reason: superseded\|access_revoked\|disabled\|rate_limited\|restart` | followed by close |
+| down | `target.setup` | `repo, target_id?, harness?, model?, confirm, target?, proposal?` | cap `target.setup`; run-less. `confirm: false` proposes (nothing runs or is saved); `confirm: true` sends back the proposal's `target` as shown, and the host tries its checks in the sandbox, saves and says hello again. Outcome `result` is the `remotea eridani targets setup --json` object (`target_setup.py`) |
 
 `state` values: `working`, `needs_you`, `idle` (shown as **Live**), `restoring`, `lost` (shown as
 **Restoring**), `exited` (**Ended**). `since` must carry a timezone. Every stored change emits
@@ -640,6 +641,23 @@ Read-only on purpose: approving, answering, starting or stopping stays in Eridan
 host's assistant can do what any reader of the run page can. The pair is ephemeral like `context.request`: never
 acked, spooled or replayed, and the host drops a reply that comes after it gave up. An unknown run or a bad request
 answers `ok: false` with the reason.
+
+### Adding a repository from the app
+
+Settings → Connections → remotea → Add a repository runs remotea's guided setup (`remotea eridani targets setup`) on the owner's
+server without a terminal (`target_setup.py`, routes `POST /remotea/target-setup`, `GET /remotea/target-setup/{op_id}`,
+`POST /remotea/target-setup/{op_id}/confirm`). It is two `target.setup` commands:
+
+1. **Propose.** The server reads the repository with a coding agent (read-only) and answers with the proposed target:
+   base branch, install step, a quick check, whether pull requests have CI, and what gates work. Nothing proposed
+   runs and nothing is saved.
+2. **Save.** The owner saw it and pressed Try the check and save. Eridani sends that proposal's `target` back as it
+   was shown, so the server does not read the repository again and what runs is what was seen. The server tries
+   each check once in its sandbox with no network, keeps the ones that pass, saves the target and says hello again;
+   the new repository is then offered wherever a task's repository is chosen.
+
+One setup at a time per server. A server without the `target.setup` cap answers `HOST_TOO_OLD` and the section is
+hidden; the CLI command still works there.
 
 ## Testing the protocol end to end
 

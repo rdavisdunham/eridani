@@ -29,6 +29,7 @@ import { RunMergePanel } from "./RunMergePanel";
 import { RunLineage, RunRestart } from "./RunRestart";
 import { TaskRoute } from "./TaskRoute";
 import { AutoStartSettings } from "./AutoStartSettings";
+import { modelOptions, plannerDefaultLabel, type ModelOption } from "./RunModels";
 import { LearningsSettings } from "./LearningsSettings";
 import { focusTarget } from "./run-restart";
 import { anchoredScrollTop, earlierLine, mergeDetail, nextOffset, scrollAnchor, type FullTurn } from "./remotea-model";
@@ -186,6 +187,9 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
   const [prompt, setPrompt] = useState(""), [busy, setBusy] = useState(false), [error, setError] = useState("");
   // "ideas": an ideas session (run_ideas.py) instead of a direct conversation.
   const [kind, setKind] = useState<"talk" | "ideas">("talk");
+  // The models the chosen computer offers; an ideas session thinks on the strongest unless another is picked.
+  const [catalog, setCatalog] = useState<ModelOption[] | null>(null), [model, setModel] = useState("");
+  useEffect(() => { api<{ models: ModelOption[] }>("/remotea/model-catalog").then(r => setCatalog(r.models ?? [])).catch(() => setCatalog([])); }, []);
   const action = useRef(crypto.randomUUID());
   useEffect(() => {
     api<{ items: SavedTarget[]; advertised: AdvertisedTarget[] }>("/remotea/targets")
@@ -193,12 +197,13 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
       .catch(e => setError(message(e)));
   }, []);
   const chosen = options?.find(o => o.key === target);
+  const hostModels = (catalog ?? []).filter(m => !chosen || m.host_id === chosen.host_id);
   const start = async () => {
     if (!chosen) return;
     setBusy(true); setError("");
     const where = chosen.saved_id ? { execution_target_id: chosen.saved_id } : { host_id: chosen.host_id, host_target: chosen.host_target };
     try {
-      const run = kind === "ideas" ? await post<Run>("/remotea/ideas", { topic: prompt, ...where, harness })
+      const run = kind === "ideas" ? await post<Run>("/remotea/ideas", { topic: prompt, ...where, harness, ...(model ? { model } : {}) })
         : await post<Run>("/remotea/sessions/new", { prompt, ...where, harness, action_id: action.current });
       onStarted(run.id);
     } catch (e) { setError(message(e)); action.current = crypto.randomUUID(); } finally { setBusy(false); }
@@ -218,9 +223,14 @@ function NewSessionDialog({ onClose, onStarted }: { onClose: () => void; onStart
         {options?.map(o => <option key={o.key} value={o.key}>{o.label}{o.detail ? " · " + o.detail : ""}</option>)}
       </select></label>
     <label className="field"><span className="field-label-text">Agent</span>
-      <select value={harness} disabled={busy} onChange={e => setHarness(e.target.value as "claude" | "codex")}>
+      <select value={harness} disabled={busy} onChange={e => { setHarness(e.target.value as "claude" | "codex"); setModel(""); }}>
         <option value="claude">Claude Code</option><option value="codex">Codex</option>
       </select></label>
+    {kind === "ideas" && !!hostModels.length && <label className="field"><span className="field-label-text">Model</span>
+      <select value={model} disabled={busy} onChange={e => setModel(e.target.value)}>
+        <option value="">{plannerDefaultLabel(hostModels, harness)}</option>
+        {modelOptions(hostModels, harness).map(m => <option key={m.model} value={m.model}>{m.label ?? m.model}</option>)}
+      </select></label>}
     <label className="field"><span className="field-label-text">{kind === "ideas" ? "What do you want ideas for?" : "First message"}</span>
       <textarea rows={5} maxLength={kind === "ideas" ? 2000 : 20000} value={prompt} disabled={busy}
         placeholder={kind === "ideas" ? "For example: ways to make onboarding faster, or quick wins in the upload flow" : "What should the agent do?"}

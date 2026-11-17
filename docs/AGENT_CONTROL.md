@@ -898,6 +898,30 @@ works with any harness.
   `brainstorm: {open, turns, started_at, ended_at, ended_by}` (null for a run that did not brainstorm). The run page
   shows a "Talking it through" card while it is open: the agent's latest message, a reply box and Plan it.
 
+## Planning depth: the model, the research and the skills
+
+Direction is where a better model and real research pay, so a planner gets both (decided 2026-11-17).
+
+- **Model.** When no model is chosen, a planner runs on the strongest the host offers: the newest `claude-fable-*`
+  in the host's model catalogue, or its `fable` alias (`agent_control.planning_default`). It applies where the
+  planner is a session of its own: a managed run (the worker then gets the host's default, not the planner's model)
+  and an ideas session. A single-session run keeps the host's default, because that session also does the work. A
+  model chosen in the Run dialog, in the ideas dialog, by Dani or on a reviewer or worker always wins.
+  `GET /remotea/model-catalog` marks it as `planning_default`, and the dialogs show "Planning default (…)".
+- **Research.** A read-only session on remotea may search and fetch the web, send sub-agents and load skills
+  (remotea `CLAUDE_RESEARCH_TOOLS`); it still cannot edit or write a file, and its shell is the same short
+  read-only list.
+- **Skills.** The brainstorm, ideas and planning prompts start with `agent_prompts.skill_note`: when the session
+  has Compound Engineering's `ce-brainstorm`, `ce-ideate` or `ce-plan`, the agent loads it first and follows it,
+  with three adaptations: questions go in its reply, one per turn (the skill's own fallback when there is no
+  question tool); nothing is written to a file, and the result is delivered through Eridani (`submit_plan`, or the
+  ranked list in its reply); and Eridani is the handoff, so the skill's closing menu and any building skill are
+  skipped. Without the skill, the built-in method that follows in the prompt applies (`NO_SKILL`). Eridani does
+  not know which hosts have the plugin; the agent checks its own skill list.
+- The built-in ideas method follows the skill's shape: ground in the code, past learnings, the web and the issue
+  tracker; generate from six angles before judging; every idea carries a basis the owner can check.
+- Codex planners get the skill pointer but no added research tools yet (its read-only sandbox is unchanged).
+
 ## Brainstorm and ideas through Dani
 
 Dani carries the same conversations by voice or typed chat (`control.*`, so both use one tool list). The conversation

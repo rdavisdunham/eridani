@@ -9,7 +9,7 @@ import {
 } from "./remotea-model";
 import { useRemotea } from "./remotea-context";
 import { TargetPicker } from "./Remotea";
-import { EffortSelect, RoleModelSelect, RunModelsContext, modelOptions, unsupportedRole, pendingRolePreferences, queueRolePreferences, type ModelOption } from "./RunModels";
+import { EffortSelect, RoleModelSelect, RunModelsContext, modelOptions, plannerDefaultLabel, unsupportedRole, pendingRolePreferences, queueRolePreferences, type ModelOption } from "./RunModels";
 import "./runs.css";
 
 const message = (e: unknown) => (e as Error).message || "Something went wrong.";
@@ -198,7 +198,7 @@ export function RunTaskDialog({ taskId, onClose, onStarted, onSetup }: {
               onClick={() => changeDraft(d => ({ ...d, harness: h.id, model: "", effort: undefined }))}>{h.label}</button>)}
           </div>
           <select aria-label="Planner model" value={draft.model} onChange={e => changeDraft(d => ({ ...d, model: e.target.value, effort: undefined }))}>
-            <option value="">Model default{modelOptions(targetCatalog, harness.id).find(m => m.default)?.label ? ` (${modelOptions(targetCatalog, harness.id).find(m => m.default)!.label})` : ""}</option>
+            <option value="">{plannerDefaultLabel(targetCatalog, harness.id)}</option>
             {draft.model && !modelOptions(targetCatalog, harness.id).some(m => m.model === draft.model) && <option value={draft.model} disabled>{draft.model} (unsupported)</option>}
             {modelOptions(targetCatalog, harness.id).map(m => <option key={m.model} value={m.model}>{m.label ?? m.model}</option>)}
           </select>

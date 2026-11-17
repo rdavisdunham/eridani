@@ -27,7 +27,7 @@ from jarvis.config import get_settings
 from jarvis.db import session_scope
 from jarvis.models import Job, Task
 from jarvis.session_models import AgentAttempt, AgentRun
-from protocol_harness import LINK_PATH, LinkProxy, RealAgentHost, access_token, missing, remotea_checkout, tail, until
+from protocol_harness import LINK_PATH, LinkProxy, RealAgentHost, access_token, git, missing, remotea_checkout, tail, until
 from sqlalchemy import select
 from test_phase1_protocol_e2e import history, new_task, save_target, task_row
 from test_protocol_e2e import OWNER, ci_errors, run_state
@@ -298,5 +298,96 @@ def test_a_real_agent_proposes_ideas_and_one_becomes_a_task(stack, monkeypatch):
         assert not host.commits(), "an ideas session changes no code"
         eri.post(f"/api/v1/remotea/runs/{run_id}/stop", {"mode": "kill"})
     except BaseException:
+        explain(stack, eri, host)
+        raise
+
+
+def test_a_real_agent_uses_the_installed_brainstorm_skill_and_researches(stack):
+    """Planning depth: with the Compound Engineering plugin installed, the agent loads ce-brainstorm, can use the
+    research tools a read-only session now has, and still talks through Eridani and writes no file."""
+    eri = stack.eridani.start()
+    enabled = eri.post("/api/v1/remotea/enable")
+    stack.proxy = proxy = LinkProxy(f"ws://127.0.0.1:{eri.port}{LINK_PATH}").start()
+    stack.host = host = RealAgentHost(remotea_checkout(), stack.tmp, proxy.url, enabled["token"])
+    plugins = host.install_plugins("compound-engineering@compound-engineering-plugin")
+    if not plugins:
+        pytest.skip("the Compound Engineering plugin is not installed on this machine")
+    host.configure_mcp(enabled["setup_code"], eri.base)
+    host.start()
+    host_id = until(lambda: [h for h in eri.get("/api/v1/remotea/status")["hosts"] if h["connected"]], 45,
+                    "the host to show as connected")[0]["id"]
+    try:
+        task_id = new_task("Make the greeting module worth importing", completion_policy="code_ready",
+                           notes="greeting.py is nearly empty. I want it to be something another project would actually "
+                                 "import. I have not decided what that means.")
+        save_target(eri, host, host_id, task_id)
+        # No model named: the planner runs on the planning default (the strongest the host offers).
+        run_id = eri.post("/api/v1/remotea/runs", {"task_id": task_id, "harness": "claude", "brainstorm": True})["id"]
+        print("planner model:", eri.get(f"/api/v1/remotea/runs/{run_id}").get("model"))
+        until(lambda: (run_state(run_id).state, run_state(run_id).reason) == ("needs_you", "brainstorm"), 900,
+              "the agent's opening message", interval=2)
+        shown = eri.get(f"/api/v1/remotea/runs/{run_id}")
+        said = max((t for t in shown["turns"] if t.get("role") != "user" and t["text"].strip()), key=lambda t: t["seq"])["text"]
+        used = host.tool_uses()
+        names = [n for n, _ in used]
+        skills = [i.get("skill") or i.get("command") for n, i in used if n == "Skill"]
+        print(f"\nreal agent with the skill opens:\n{said}\n\ntools used: { {n: names.count(n) for n in sorted(set(names))} }\n"
+              f"skills loaded: {skills}")
+        assert any("ce-brainstorm" in str(s) for s in skills), skills
+        assert "?" in said
+        assert not [n for n in names if n in ("Edit", "Write", "NotebookEdit")] or not host.commits()
+        assert not host.commits() and git(host.repo, "status", "--porcelain").strip() == ""
+        eri.post(f"/api/v1/remotea/runs/{run_id}/stop", {"mode": "kill"})
+    except BaseException:
+        print("tools used:", [n for n, _ in host.tool_uses()][-40:])
+        explain(stack, eri, host)
+        raise
+
+
+def test_a_real_agent_ideates_with_the_installed_skill_and_its_research(stack, monkeypatch):
+    """Planning depth: ce-ideate in a read-only session, with the research it calls for (sub-agents, the web)."""
+    from jarvis import run_ideas
+
+    monkeypatch.setattr(run_ideas, "enabled", lambda: True)
+    eri = stack.eridani.start()
+    enabled = eri.post("/api/v1/remotea/enable")
+    stack.proxy = proxy = LinkProxy(f"ws://127.0.0.1:{eri.port}{LINK_PATH}").start()
+    stack.host = host = RealAgentHost(remotea_checkout(), stack.tmp, proxy.url, enabled["token"])
+    if not host.install_plugins("compound-engineering@compound-engineering-plugin"):
+        pytest.skip("the Compound Engineering plugin is not installed on this machine")
+    # ERIDANI_SMOKE_REPO: ideate on a real project (a local clone, read by the agent, never pushed anywhere) instead
+    # of the one-file scratch repository, which is too small for the skill to judge research worth doing.
+    source = os.environ.get("ERIDANI_SMOKE_REPO")
+    if source:
+        git(host.repo, "fetch", "-q", "file://" + source, "main")
+        git(host.repo, "reset", "-q", "--hard", "FETCH_HEAD")
+        git(host.repo, "push", "-q", "-f", "origin", "main")
+    topic = os.environ.get("ERIDANI_SMOKE_TOPIC") or "What would make a small Python greeting library worth importing in 2026"
+    host.configure_mcp(enabled["setup_code"], eri.base)
+    host.start()
+    host_id = until(lambda: [h for h in eri.get("/api/v1/remotea/status")["hosts"] if h["connected"]], 45,
+                    "the host to show as connected")[0]["id"]
+    try:
+        catalog = eri.get("/api/v1/remotea/model-catalog")["models"]
+        print("\nclaude models offered:", [(m["model"], m.get("default"), m["planning_default"]) for m in catalog if m["harness"] == "claude"])
+        setup = new_task("Set up the scratch repository")
+        target = save_target(eri, host, host_id, setup)
+        target_id = target.get("id") or task_row(setup).execution_target_id
+        run_id = eri.post("/api/v1/remotea/ideas", {"topic": topic, "execution_target_id": target_id})["id"]
+        print("planner model:", eri.get(f"/api/v1/remotea/runs/{run_id}").get("model"))
+        until(lambda: (run_state(run_id).state, run_state(run_id).reason) == ("needs_you", "brainstorm"), 2400,
+              "the agent's ideas", interval=3)
+        shown = eri.get(f"/api/v1/remotea/runs/{run_id}")
+        said = max((t for t in shown["turns"] if t.get("role") != "user" and t["text"].strip()), key=lambda t: t["seq"])["text"]
+        used = host.tool_uses()
+        names = [n for n, _ in used]
+        skills = [i.get("skill") or i.get("command") for n, i in used if n == "Skill"]
+        print(f"ideas with the skill:\n{said}\n\ntools used: { {n: names.count(n) for n in sorted(set(names))} }\nskills loaded: {skills}")
+        assert any("ce-ideate" in str(s) for s in skills), skills
+        assert not host.commits() and git(host.repo, "status", "--porcelain").strip() == ""
+        eri.post(f"/api/v1/remotea/runs/{run_id}/stop", {"mode": "kill"})
+    except BaseException:
+        used = host.tool_uses()
+        print("tools used:", {n: [x for x, _ in used].count(n) for n in sorted({x for x, _ in used})})
         explain(stack, eri, host)
         raise

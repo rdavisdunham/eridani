@@ -1,12 +1,22 @@
 import { createContext, useContext } from "react";
 import { api, durableScope, durableStorageKey } from "./api";
 import { HARNESSES, type RoleChoice, type HarnessId } from "./remotea-model";
-export type ModelOption = { host_id: string; harness: string; model: string; label?: string; efforts: string[]; permission_profiles: string[]; default?: boolean };
+export type ModelOption = { host_id: string; harness: string; model: string; label?: string; efforts: string[]; permission_profiles: string[]; default?: boolean;
+  /** What a planner on this host runs on when no model is chosen (agent_control.planning_default). */
+  planning_default?: boolean };
 /** null means a legacy server; [] means this host advertises no supported models. */
 export const RunModelsContext = createContext<ModelOption[] | null>(null);
 export function modelOptions(catalog: ModelOption[] | null, harness: string) {
   if (catalog === null) return (HARNESSES.find(h => h.id === harness)?.models ?? []).map(m => ({ harness, model: m.id, label: m.label, efforts: [], permission_profiles: [], host_id: "" } as ModelOption));
   return catalog.filter(m => m.harness === harness).filter((m, i, items) => items.findIndex(x => x.model === m.model) === i);
+}
+/** The words for "no model chosen" on a planner: the planning default when the host has one (the strongest model
+ * it offers), else the host's own default. */
+export function plannerDefaultLabel(catalog: ModelOption[] | null, harness: string): string {
+  const options = modelOptions(catalog, harness);
+  const planning = options.find(m => m.planning_default), usual = options.find(m => m.default);
+  if (planning) return `Planning default (${planning.label ?? planning.model})`;
+  return usual?.label ? `Model default (${usual.label})` : "Model default";
 }
 export function unsupportedRole(catalog: ModelOption[] | null, role: RoleChoice | null | undefined): string {
   if (!role || catalog === null) return "";

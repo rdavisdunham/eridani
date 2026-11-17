@@ -2429,6 +2429,27 @@
       "feature": "agent_control"
     },
     {
+      "method": "POST",
+      "path": "/api/v1/remotea/target-setup",
+      "handler": "start_target_setup",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/remotea/target-setup/{op_id}",
+      "handler": "target_setup_status",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/remotea/target-setup/{op_id}/confirm",
+      "handler": "target_setup_confirm",
+      "source": "apps/api/jarvis/remotea_routes.py",
+      "feature": "agent_control"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/remotea/targets",
       "handler": "targets",

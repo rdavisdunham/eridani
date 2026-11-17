@@ -388,3 +388,12 @@
 .run-brainstorm label.run-idea { display: flex; gap: 8px; align-items: flex-start; margin-top: 0; }
 .run-brainstorm label.run-idea > span { flex: 1; min-width: 0; }
 .run-brainstorm label.run-idea > input[type="checkbox"] { width: auto; flex: 0 0 auto; margin: 3px 0 0; }
+
+/* Settings → remotea → Add a repository (TargetSetupSettings.tsx) */
+.target-setup-ask { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.target-setup-ask input { flex: 1 1 220px; min-width: 0; }
+.target-setup-proposal { border: 1px solid var(--border, rgba(127,127,127,.3)); border-radius: 8px; padding: 12px; margin: 8px 0; min-width: 0; }
+.target-setup-proposal dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 8px 0; }
+.target-setup-proposal dt { font-weight: 600; }
+.target-setup-proposal dd { margin: 0; overflow-wrap: anywhere; }
+.target-setup-tail { max-height: 200px; overflow: auto; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

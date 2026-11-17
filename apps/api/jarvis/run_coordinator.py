@@ -96,7 +96,10 @@ TTL = {"spawn": timedelta(minutes=15), "input": timedelta(minutes=10), "answer":
        # Someone is waiting for the tab to come forward: a late one would surprise more than help.
        "terminal.focus": timedelta(seconds=30), "run.pause": timedelta(days=36500), "run.resume": timedelta(days=36500),
        # Reopen terminal (run_reopen.py): the owner is waiting for the agent to come back; a late one would surprise.
-       "run.reopen": timedelta(minutes=5)}
+       "run.reopen": timedelta(minutes=5),
+       # Add a repository from the app (target_setup.py): the host may take minutes to read it and try its check,
+       # but a setup that has not started within this long is better asked for again.
+       "target.setup": timedelta(minutes=20)}
 # Commands that leave no trace on the run's timeline or history (not work the run does).
 QUIET_COMMANDS = {"terminal.focus"}
 # Commands that only read from the host: sent whoever has control of the session (no ensure_eridani_control).
@@ -546,6 +549,9 @@ def on_outcome(db, row, state, detail="", result=None):
     if row.kind in QUIET_COMMANDS:
         return  # The route waiting on it reads the outcome; the run itself is not touched.
     run = db.get(AgentRun, row.run_id, with_for_update=True) if row.run_id else None
+    if row.kind == "target.setup":
+        emit(db, row.owner_id, "agent.changed", row.op_id)  # The settings page waiting on it reads the outcome.
+        return
     if row.kind == "answer":
         question = db.scalar(select(AgentQuestion).where(AgentQuestion.answer_op_id == row.op_id))
         if question and question.status == "submitted" and state in {"failed", "rejected", "uncertain"}:

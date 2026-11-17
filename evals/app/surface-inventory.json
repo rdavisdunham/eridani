@@ -62,7 +62,15 @@
       "feature": "agent_control"
     },
     {
+      "name": "control.ideas_tasks",
+      "feature": "agent_control"
+    },
+    {
       "name": "control.message",
+      "feature": "agent_control"
+    },
+    {
+      "name": "control.plan_it",
       "feature": "agent_control"
     },
     {

@@ -898,6 +898,31 @@ works with any harness.
   `brainstorm: {open, turns, started_at, ended_at, ended_by}` (null for a run that did not brainstorm). The run page
   shows a "Talking it through" card while it is open: the agent's latest message, a reply box and Plan it.
 
+## Brainstorm and ideas through Dani
+
+Dani carries the same conversations by voice or typed chat (`control.*`, so both use one tool list). The conversation
+lives on the run, not in the chat or voice session: a reply spoken to Dani, typed to Dani or typed on the run page is
+the same queued message, and each side reads the same state. The owner can change between them at any point.
+
+- **Start.** `control_start` takes `brainstorm: true`; the proposal's summary says "talking it through with you
+  before it plans", so the owner's yes covers it. When a start is proposed for a task nobody has shaped (no PRD and no
+  criteria of the owner's own, `agent_control.unshaped`), the result carries `offer`: Dani offers to talk it through
+  first. A changed start for the same task replaces the one still waiting (`decided_via: replaced`).
+- **What Dani is shown.** `control_status` gives an open conversation as `conversation: {kind, turns,
+  waiting_for_owner, agent_said, owner_last_said, next}` (`agent_control.conversation`); for an ideas session also
+  `ideas: [{number, title, size, made_a_task}]`. `owner_last_said` is the owner's last reply wherever they gave it.
+- **Replying.** `control_message` with the run's id sends the owner's words at once (the existing rule for a named
+  run on owner-origin work). For an open conversation the tool then waits up to 30 seconds for the agent's answer
+  (`run_brainstorm.reply_after`) and returns it as `conversation`, so Dani reads it back in the same turn; a slower
+  agent is reported as still thinking.
+- **Plan it.** `control_plan_it` is `run_brainstorm.plan_it`. The plan then arrives at `plan_approval`, which Dani
+  already reads out and settles with `control_plan_review`.
+- **Ideas.** `control_ideas_tasks {numbers}` makes tasks from the ideas the owner names by number.
+- The conversation tools sit in their own tool group, `agent_talks` (a group holds fewer than ten tools), which the
+  `agents` group's description points to.
+- Starting an ideas session is not a Dani tool yet (it needs a repository chosen by name); it starts from the
+  remotea page.
+
 ## Ideate
 
 `run_ideas.py`: ideas for a repository before any task exists, and tasks made from the ones the owner picks

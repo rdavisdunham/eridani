@@ -51,6 +51,9 @@ class ControlStart(Input):
     worker: RoleSpec | None = None
     rounds: int = Field(default=2, ge=1, le=10)
     approve_final: bool = True
+    # Talk the task through with the agent before anything is planned (run_brainstorm.py): the run opens as a
+    # conversation the owner carries on by voice, in chat or on the run page, and plans when they say so.
+    brainstorm: bool = False
 
     @model_validator(mode="after")
     def one_task(self):
@@ -125,8 +128,21 @@ class ControlPlanReview(Target):
     note: str = Field(default="", max_length=4000)
 
 
+class ControlPlanIt(Target):
+    """End a run's opening conversation (control_status shows it under `conversation`) and ask the agent for the plan."""
+
+
+class ControlIdeasTasks(Target):
+    """Make tasks from an ideas session's ideas (control_status lists them, numbered, under `conversation.ideas`)."""
+
+    # The ideas' numbers as control_status lists them (1 is the first).
+    numbers: list[int] = Field(min_length=1, max_length=12)
+
+
 COMMANDS = {
     "control.start": ControlStart,
+    "control.plan_it": ControlPlanIt,
+    "control.ideas_tasks": ControlIdeasTasks,
     "control.message": ControlMessage,
     "control.confirm": ControlConfirm,
     "control.stop": ControlStop,

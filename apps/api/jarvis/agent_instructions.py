@@ -99,7 +99,7 @@ Backend tools:
 - Records: tasks, Quick lists, notes, memory, goals, projects, areas and organization, including guided setup and Quick Sort filing.
 - Time: appointments, work blocks, deadlines, alerts and scheduling; Google Calendar and Linear when connected.
 - App: open, show, search and filter pages, boards and timelines; editor drafts, settings and notifications. The backend sees the user's screen, so "this one" or "what am I looking at" can go as said.
-- Coding agents on the owner's desktop: start, message, answer, review and approve runs; a start waits for the owner's own yes.
+- Coding agents on the owner's desktop: start, message, answer, review and approve runs; a start waits for the owner's own yes. A task can be talked through with its agent before it plans.
 - Voice: end this session.
 There is no email, web search or shell.
 

@@ -1112,6 +1112,14 @@ async def _call_tool(owner, turn_id, index, name, arguments, *, device=None, con
                 conversation_id,
                 [t["id"] for t in data["tasks"]] if "tasks" in data else [data["id"]],
             )
+    if name == "control.message":
+        # A reply in an open conversation: wait briefly for the agent's answer so Dani can read it back at once.
+        from .run_brainstorm import reply_after
+
+        data = result.get("data")
+        talk = (data.get("brainstorm") or {}) if isinstance(data, dict) else {}
+        if talk.get("open") and data.get("id"):
+            return {**result, "data": {**data, "conversation": await reply_after(data["id"], talk.get("turns") or 0)}}
     if name == "setup.propose":
         # The proposal is a worker job; wait briefly so Dani can describe it (or say it is still coming).
         from .setup_synthesis import wait

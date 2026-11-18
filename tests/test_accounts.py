@@ -344,3 +344,77 @@ async def test_private_interactive_tools_stop_after_session_revocation(client):
         with pytest.raises(DomainError,match="Sign in"):
             await call_tool("guest",str(uuid4()),0,"task_create",{"title":"Must not save"},device=boot["device_id"])
     finally:principal.reset(token)
+
+
+def today_boxes(c):
+    response = c.get("/api/v1/today/boxes")
+    assert response.status_code == 200, response.text
+    return [(box["target_id"], box["reason"]) for box in response.json()["boxes"]]
+
+
+def pin_box(c, target_id, pinned=True):
+    return post(c, "/today/pins", {"command_id": str(uuid4()), "target_id": target_id, "pinned": pinned})["data"]
+
+
+def test_today_pins_are_per_member_and_a_viewer_can_pin_but_not_edit(client):
+    guest = client_for("guest")
+    w = shared(client, guest)
+    team = command(client, "quicklist.create", title="Team checklist", items=[{"title": "Book room"}])
+    # Creating the list pinned it to its creator's Today only.
+    assert today_boxes(client) == [(team["id"], "pinned")] and today_boxes(guest) == []
+    assert client.get("/api/v1/quick-lists/" + team["id"]).json()["pinned"] is True
+    assert guest.get("/api/v1/quick-lists/" + team["id"]).json()["pinned"] is False
+    with session_scope() as db:
+        db.get(WorkspaceMember, (w["id"], "guest")).role = "viewer"
+    assert pin_box(guest, team["id"]) == {"kind": "quick_list", "target_id": team["id"], "pinned": True}
+    assert today_boxes(guest) == [(team["id"], "pinned")]
+    assert [row["pinned"] for row in guest.get("/api/v1/quick-lists").json()["items"]] == [True]
+    # Unpinning reaches only the person who did it, and a pin never changes the list.
+    pin_box(client, team["id"], pinned=False)
+    assert today_boxes(client) == [] and today_boxes(guest) == [(team["id"], "pinned")]
+    pin_box(guest, team["id"], pinned=False)
+    assert today_boxes(guest) == []
+    assert guest.get("/api/v1/quick-lists/" + team["id"]).json()["revision"] == team["revision"]
+    # Every other write stays refused for a viewer.
+    refused = guest.post("/api/v1/commands", json={"command_id": str(uuid4()), "tool": "quicklist.item", "arguments": {
+        "list_id": team["id"], "expected_revision": team["revision"], "operation": "add", "title": "No"}})
+    assert refused.status_code == 403 and refused.json()["error"]["code"] == "READ_ONLY"
+    assert TestClient(app).get("/api/v1/today/boxes").status_code == 401
+
+
+def test_lists_pin_for_their_creator_on_every_path_and_dani_pins_for_a_viewer(client, monkeypatch):
+    from cryptography.fernet import Fernet
+    from jarvis import agent_work
+    from jarvis.models import AgentWork
+    from test_external_agents import call, key
+    for name, value in (("integration_encryption_key", Fernet.generate_key().decode()),
+                        ("openai_api_key", "synthetic"), ("gemini_api_key", "synthetic")):
+        monkeypatch.setattr(get_settings(), name, value)
+    guest = client_for("guest")
+    w = shared(client, guest)
+    team = command(client, "quicklist.create", title="Team checklist", items=[{"title": "Book room"}])
+    _, headers = key(guest)
+    conversation = post(guest, "/conversations", {})
+    work = post(guest, "/work", {"turn_id": str(uuid4()), "conversation_id": conversation["id"],
+                                 "message": "Put the team checklist on my Today"})
+    with session_scope() as db:
+        row = db.get(AgentWork, work["id"])
+        db.expunge(row)
+    # A list made with the member's bot key or by Dani for them is pinned to that member's Today only.
+    by_key = call(headers, "quicklist.create", {"title": "Key list"}).json()["data"]
+    with agent_work.principal_for(row), session_scope() as db:
+        by_dani = execute(db, w["id"], row.id + ":0", "quicklist.create", {"title": "Dani list"})["data"]
+    assert by_key["pinned"] is by_dani["pinned"] is True
+    assert today_boxes(guest) == [(by_key["id"], "pinned"), (by_dani["id"], "pinned")]
+    assert today_boxes(client) == [(team["id"], "pinned")]
+    with session_scope() as db:
+        db.get(WorkspaceMember, (w["id"], "guest")).role = "viewer"
+    # A key made while its holder could edit stays read-only after the downgrade.
+    assert call(headers, "today.pin", {"target_id": team["id"], "pinned": True}).status_code == 403
+    assert (team["id"], "pinned") not in today_boxes(guest)
+    with agent_work.principal_for(row), session_scope() as db:
+        data = execute(db, w["id"], row.id + ":1", "today.pin", {"target_id": team["id"], "pinned": True})["data"]
+    assert data["pinned"] is True and today_boxes(guest)[-1] == (team["id"], "pinned")
+    with agent_work.principal_for(row), session_scope() as db, pytest.raises(DomainError, match="view access"):
+        execute(db, w["id"], row.id + ":2", "quicklist.item",
+                {"list_id": team["id"], "expected_revision": team["revision"], "operation": "add", "title": "No"})

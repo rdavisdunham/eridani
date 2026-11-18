@@ -174,6 +174,12 @@ class TaskReopen(TaskState):
         description="For a quick list: also reopen these items, such as completed_item_ids from finishing the whole list.")
 
 
+class TodayPinChange(Args):
+    """Pin a box to, or take it off, the Today of the person acting (today.py)."""
+    target_id: str = Field(min_length=1, max_length=36)
+    pinned: bool
+
+
 class ScheduleCreate(Args):
     title: str = Field(min_length=1, max_length=500)
     when: str = Field(max_length=100)
@@ -328,6 +334,7 @@ COMMANDS = {
     "notification.snooze": NotificationAction,
     "notification.dismiss": NotificationAction,
     "settings.update": SettingsUpdate,
+    "today.pin": TodayPinChange,
 }
 
 
@@ -639,7 +646,7 @@ def execute(db, owner, command_id, tool, arguments):
     if tool.startswith("memory."):
         advisory(db, f"memory:{owner}")
     if tool.startswith(
-        ("review.", "quicksort.", "quicklist.", "onboarding.", "setup.", "settings.", "notelist.", "task.", "project.", "schedule.", "notification.", "note.", "space.", "area.", "goal.", "actor.", "record.", "structure.", "routing.", "template.")
+        ("review.", "quicksort.", "quicklist.", "onboarding.", "setup.", "settings.", "notelist.", "task.", "project.", "schedule.", "notification.", "note.", "space.", "area.", "goal.", "actor.", "record.", "structure.", "routing.", "template.", "today.")
     ):
         # Serialize owner graph changes so two concurrent parent edits cannot create a cycle.
         advisory(db, f"workspace:{owner}")
@@ -717,6 +724,9 @@ def mutate(db, owner, tool, args, command_id):
     if tool.startswith("quicklist."):
         from .quick_lists import mutate as capture_mutate
         return capture_mutate(db, owner, tool, args, command_id)
+    if tool == "today.pin":
+        from .today import change_pin
+        return change_pin(db, owner, args)
     if tool.startswith("onboarding."):
         from .onboarding import mutate as setup_mutate
         return setup_mutate(db, owner, tool, args, command_id)

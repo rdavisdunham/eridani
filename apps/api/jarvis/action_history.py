@@ -363,6 +363,8 @@ def public_change(db, row):
 
 
 def changes_for_work(db, work):
+    from .today import pin_receipt
+
     rows = list(
         db.scalars(
             select(ActionChange)
@@ -405,7 +407,8 @@ def changes_for_work(db, work):
         )
     ):
         data = receipt.result.get("data", {})
-        if data.get("workflow") == "quick_sort":
+        # A Today pin is not task data, and unpinning is its undo.
+        if data.get("workflow") == "quick_sort" or pin_receipt(data):
             continue
         remote_id = data.get("job_id") or (data.get("external") or {}).get("job_id")
         remote = db.get(Job, remote_id) if remote_id else None

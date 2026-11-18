@@ -23,6 +23,8 @@ class Create(Args):
     due_timezone: str | None = None
     planned_date: date | None = None
     deadline_alert: Literal["off","on"] = "off"
+    # Omitted: a list with no date is pinned to its creator's Today; a dated list shows up on its date instead.
+    pinned: bool | None = None
 
 class Change(Args):
     list_id: str
@@ -50,7 +52,10 @@ def on_list(items):
     """Open items and checked items not yet archived: what the cap and reorder count."""
     return [x for x in items if not x.archived and x.status!="cancelled"]
 
-def read(db,owner,identity):
+def read(db,owner,identity,account=None):
+    """The list with its items, and whether it is pinned to this person's Today (the person acting by default)."""
+    from .access import actor
+    from .today import QUICK_LIST, is_pinned
     row=owned(db,Task,identity,owner)
     if not row.is_quick_list:
         raise DomainError("NOT_QUICK_LIST","This is now a normal task; open its task details.",409)
@@ -59,16 +64,27 @@ def read(db,owner,identity):
     shown=on_list(items);ids={x.id for x in shown}
     items=[*shown,*(x for x in items if x.id not in ids)]
     # A removed (cancelled) item counts as neither open nor done.
-    return {**serial(row),"items":[serial(x) for x in items],"done":sum(x.status=="completed" for x in items),"total":sum(x.status!="cancelled" for x in items)}
+    return {**serial(row),"items":[serial(x) for x in items],"done":sum(x.status=="completed" for x in items),"total":sum(x.status!="cancelled" for x in items),
+            "pinned":is_pinned(db,owner,account or actor(db,owner),QUICK_LIST,row.id)}
 
-def listing(db,owner,query=""):
+def listing(db,owner,query="",account=None,pinned=None):
+    """Lists by list or item title. `pinned=True` gives this person's pinned lists in any state, finished and
+    archived ones included, so one can be found and reopened; `pinned=False` gives the unpinned lists."""
+    from .access import actor
     from .text_normalize import sql_filter
-    q=select(Task).where(Task.owner_id==owner,Task.is_quick_list.is_(True),Task.archived.is_(False))
+    from .today import QUICK_LIST, pins
+    account=account or actor(db,owner)
+    q=select(Task).where(Task.owner_id==owner,Task.is_quick_list.is_(True))
+    if pinned is not None:
+        mine=[p.target_id for p in pins(db,owner,account) if p.kind==QUICK_LIST]
+        q=q.where(Task.id.in_(mine) if pinned else Task.id.not_in(mine))
+    if not pinned:
+        q=q.where(Task.archived.is_(False))
     if query:
         matches=select(Task.parent_task_id).where(Task.owner_id==owner,sql_filter(query,Task.title))
         q=q.where(sql_filter(query,Task.title) | Task.id.in_(matches))
     rows=list(db.scalars(q.order_by(Task.updated_at.desc()).limit(100)))
-    return {"items":[read(db,owner,r.id) for r in rows],"limit":100}
+    return {"items":[read(db,owner,r.id,account) for r in rows],"limit":100}
 
 def core(db,owner,tool,args,command_id):
     from .domain import mutate
@@ -152,7 +168,7 @@ def reopens(tool,args,row):
 
 def mutate(db,owner,tool,args,command_id):
     if tool=="quicklist.create":
-        values=args.model_dump(exclude={"items"})
+        values=args.model_dump(exclude={"items","pinned"})
         root=core(db,owner,"task.create",TaskCreate(**values),command_id)
         row=owned(db,Task,root["id"],owner)
         row.is_quick_list=True
@@ -160,6 +176,12 @@ def mutate(db,owner,tool,args,command_id):
             child=core(db,owner,"task.create",TaskCreate(title=item.title,parent_task_id=row.id,deadline_alert="off"),command_id)
             task=owned(db,Task,child["id"],owner)
             task.quick_section=item.section;task.quick_order=i
+        pinned=args.pinned if args.pinned is not None else not (args.due_date or args.planned_date)
+        if pinned:
+            # The pin is the creator's: the browser session, Dani's request or the bot key's account.
+            from .access import actor
+            from .today import QUICK_LIST, pin
+            pin(db,owner,actor(db,owner),QUICK_LIST,row.id)
         db.flush()
         return read(db,owner,row.id)
     row=owned(db,Task,args.list_id,owner,lock=True)

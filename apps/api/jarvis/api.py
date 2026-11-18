@@ -394,13 +394,35 @@ def organization(user: User):
 def quick_lists(user: User, query: str = Query(default="", max_length=300)):
     from .quick_lists import listing
     with session_scope() as db:
-        return listing(db,user.owner_id,query)
+        return listing(db,user.owner_id,query,account=user.account_id or user.owner_id)
 
 @app.get("/api/v1/quick-lists/{list_id}")
 def quick_list(list_id: str, user: User):
     from .quick_lists import read
     with session_scope() as db:
-        return read(db,user.owner_id,list_id)
+        return read(db,user.owner_id,list_id,user.account_id or user.owner_id)
+
+
+class PinInput(Input):
+    command_id: str = Field(min_length=1, max_length=100)
+    target_id: str
+    pinned: bool
+
+
+@app.get("/api/v1/today/boxes")
+def today_boxes(user: User, day: date | None = None):
+    """`day` is the browser's local date; the workspace's own date stands in when it is missing."""
+    from .today import boxes
+    with session_scope() as db:
+        return {"boxes": boxes(db, user.owner_id, user.account_id or user.owner_id, day)}
+
+
+@app.post("/api/v1/today/pins")
+def today_pin(body: PinInput, user: User):
+    """A pin changes only this person's Today, so viewers may pin too (access.request_access)."""
+    with session_scope() as db:
+        return execute(db, user.owner_id, body.command_id, "today.pin",
+                       {"target_id": body.target_id, "pinned": body.pinned})
 
 @app.get("/api/v1/onboarding")
 def onboarding(user: User):

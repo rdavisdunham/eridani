@@ -18,11 +18,12 @@ const item=(id:string,title:string,extra:Partial<Task>={})=>({id,title,status:"o
 const quickList=(items:Task[],extra:Partial<QuickList>={})=>({id:"L",title:"Groceries",status:"open",revision:5,archived:false,is_quick_list:true,due_date:null,due_time:null,planned_date:null,items,
  done:items.filter(i=>i.status==="completed").length,total:items.filter(i=>i.status!=="cancelled").length,...extra}) as QuickList;
 type Call={method:string;url:string;body:{tool?:string;arguments?:Record<string,unknown>;[key:string]:unknown}};
-let host:HTMLDivElement,root:Root,calls:Call[],serve:(call:Call)=>{status:number;body:unknown};
+type Reply={status:number;body:unknown};
+let host:HTMLDivElement,root:Root,calls:Call[],serve:(call:Call)=>Reply|Promise<Reply>;
 const ok=(body:unknown)=>({status:200,body}),done=(data:unknown)=>ok({command_id:"c",status:"succeeded",data});
 beforeEach(()=>{host=document.createElement("div");document.body.append(host);root=createRoot(host);calls=[];
  vi.stubGlobal("fetch",async(url:string,init:RequestInit={})=>{const call={method:init.method??"GET",url,body:init.body?JSON.parse(String(init.body)):{}};calls.push(call);
-  const reply=call.url==="/api/v1/projects"?ok({items:[]}):serve(call);return {ok:reply.status<400,status:reply.status,json:async()=>reply.body,headers:new Headers()};});});
+  const reply=call.url==="/api/v1/projects"?ok({items:[]}):await serve(call);return {ok:reply.status<400,status:reply.status,json:async()=>reply.body,headers:new Headers()};});});
 afterEach(()=>{act(()=>root.unmount());host.remove();vi.unstubAllGlobals();});
 const flush=()=>act(async()=>{for(let i=0;i<5;i++)await new Promise(r=>setTimeout(r,0));});
 const commands=()=>calls.filter(c=>c.url==="/api/v1/commands").map(c=>({tool:c.body.tool,arguments:c.body.arguments}));
@@ -39,6 +40,22 @@ describe("the full list",()=>{
   await act(async()=>document.querySelector<HTMLButtonElement>('[aria-label="Move down Milk"]')!.click());
   await flush();
   expect(commands()).toEqual([{tool:"quicklist.item",arguments:{list_id:"L",expected_revision:5,operation:"reorder",order:["b","a"]}}]);
+ });
+ it("stays open with the typed item when an add sent just before closing is refused",async()=>{
+  const onClose=vi.fn();let answer!:(reply:Reply)=>void;
+  serve=call=>call.method==="GET"?ok(quickList([item("a","Milk")])):new Promise<Reply>(resolve=>{answer=resolve;});
+  await act(async()=>root.render(<QuickListDetail id="L" onClose={onClose} onChanged={()=>{}}/>));
+  await flush();
+  const field=document.querySelector<HTMLInputElement>('[aria-label="New checklist item"]')!;
+  await act(async()=>type(field,"Eggs"));
+  await act(async()=>field.form!.requestSubmit());
+  expect(field.value).toBe("");
+  await act(async()=>document.querySelector<HTMLButtonElement>('[aria-label="Close Quick list"]')!.click());
+  await act(async()=>answer({status:409,body:{error:{code:"LIST_FULL",message:"Quick lists hold up to 100 items."}}}));
+  await flush();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(document.querySelector<HTMLInputElement>('[aria-label="New checklist item"]')!.value).toBe("Eggs");
+  expect([...document.querySelectorAll('[role="alert"]')].map(e=>e.textContent)).toContain("Add or clear the unsaved checklist item before leaving. Unsaved text is kept.Reload saved list");
  });
  it("pins and unpins the list for this person, a viewer too, without touching its do date",async()=>{
   const onChanged=vi.fn();

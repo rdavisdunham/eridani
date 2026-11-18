@@ -73,7 +73,7 @@ describe("a quick list's box on Today", () => {
       item("d", "Butter", { status: "completed", archived: true, archive_reason: "automatic" }),
       item("e", "Typo", { status: "cancelled" }),
     ]))));
-    expect(html).toMatch(/<h2 id="[^"]+">Groceries<\/h2>/);
+    expect(html).toMatch(/<h2 id="[^"]+" tabindex="-1">Groceries<\/h2>/);
     expect(html).toContain('aria-label="Check off Milk"');
     expect(html).toContain('aria-label="Check off Eggs"');
     expect(html).toContain(">Store<");
@@ -210,7 +210,7 @@ describe("a quick list's box on Today", () => {
     expect(openTitles()).toEqual(["Oat milk"]);
   });
 
-  it("moves focus to the next open item's check, then to the add field once the last one is checked", async () => {
+  it("moves focus to the next open item's check, then to the add field when checking the last one leaves the list open", async () => {
     let revision = 5;
     serve = call => done({ ...quickList([item("a", "Milk", { status: "completed", revision: 2 }), item("b", "Eggs", { status: call.body.arguments?.item_id === "b" ? "completed" : "open" })], { revision: ++revision }) });
     await render(box(pinnedBox(quickList([item("a", "Milk"), item("b", "Eggs")]))));
@@ -219,7 +219,48 @@ describe("a quick list's box on Today", () => {
     expect(document.activeElement).toBe(byLabel("Check off Eggs"));
     await flush();
     await act(async () => byLabel("Check off Eggs").click());
+    await flush();
     expect(document.activeElement).toBe(byLabel("Add to Groceries"));
+  });
+
+  it("holds focus on the box while checking its last item finishes the list, so Undo can take it", async () => {
+    const onFinished = vi.fn<(f: FinishedList) => void>();
+    const reply = deferred();
+    serve = () => reply.promise;
+    await render(box(pinnedBox(quickList([item("a", "Milk"), item("c", "Bread", { status: "completed" })])), { onFinished }));
+    let fieldFocused = 0;
+    byLabel("Add to Groceries").addEventListener("focus", () => { fieldFocused++; });
+    byLabel("Check off Milk").focus();
+    await act(async () => byLabel("Check off Milk").click());
+    expect(document.activeElement).toBe(host.querySelector("h2"));
+    await act(async () => reply.resolve(done({ ...quickList([item("a", "Milk", { status: "completed", revision: 2 }), item("c", "Bread", { status: "completed" })], { status: "completed", revision: 7 }), list_finished: true, list_id: "L", list_revision: 7 })));
+    await flush();
+    expect(onFinished).toHaveBeenCalledTimes(1);
+    expect(onFinished.mock.calls[0][0].focus).toBe(true);
+    expect(fieldFocused).toBe(0);
+  });
+
+  it("moves focus to the add field when checking the last item is refused", async () => {
+    serve = () => refused("NOT_FOUND", "That item is gone.");
+    await render(box(pinnedBox(quickList([item("a", "Milk"), item("c", "Bread", { status: "completed" })]))));
+    byLabel("Check off Milk").focus();
+    await act(async () => byLabel("Check off Milk").click());
+    await flush();
+    expect(openTitles()).toEqual(["Milk"]);
+    expect(document.activeElement).toBe(byLabel("Add to Groceries"));
+  });
+
+  it("keeps its newer list when Today hands it an older read after a check, and takes a newer one", async () => {
+    serve = () => done(quickList([item("a", "Milk", { status: "completed", revision: 2 }), item("b", "Eggs")], { revision: 6 }));
+    await render(box(pinnedBox(quickList([item("a", "Milk"), item("b", "Eggs")]))));
+    await act(async () => byLabel("Check off Milk").click());
+    await flush();
+    // Today read its boxes before the check landed, and that read arrives now.
+    await render(box(pinnedBox(quickList([item("a", "Milk"), item("b", "Eggs")]))));
+    expect(openTitles()).toEqual(["Eggs"]);
+    expect(doneLine()).toBe("1 done");
+    await render(box(pinnedBox(quickList([item("a", "Milk", { status: "completed", revision: 2 }), item("b", "Eggs"), item("n", "Bread")], { revision: 8 }))));
+    expect(openTitles()).toEqual(["Eggs", "Bread"]);
   });
 
   it("unchecks an item from the done line", async () => {
@@ -258,12 +299,43 @@ describe("a quick list's box on Today", () => {
     serve = () => done({ ...quickList([], { status: "completed", revision: 6 }), completed_item_ids: ["a", "b"] });
     await act(async () => host.querySelector<HTMLButtonElement>(".box-confirm .btn-primary")!.click());
     await flush();
-    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true } }]);
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true, open_item_ids: ["a", "b"] } }]);
     expect(onFinished).toHaveBeenCalledTimes(1);
     // The undo reopens the list and the items it completed.
     serve = () => done({ ...quickList([], { revision: 7 }), reopened_item_ids: ["a", "b"] });
     await onFinished.mock.calls[0][0].undo();
     expect(commands().at(-1)).toEqual({ tool: "task.reopen", arguments: { task_id: "L", expected_revision: 6, item_ids: ["a", "b"] } });
+  });
+
+  it("asks again with the server's count when the list changed while it asked, and never resends consent by itself", async () => {
+    await render(box(pinnedBox(quickList([item("a", "Milk"), item("c", "Bread", { status: "completed" })]))));
+    const confirm = () => act(async () => host.querySelector<HTMLButtonElement>(".box-confirm .btn-primary")!.click());
+    await menu("Finish list");
+    expect(host.textContent).toContain("1 item isn't checked. Finish the whole list?");
+    // Eggs was added from another device while the question was up.
+    serve = call => call.method === "GET" ? ok(quickList([item("a", "Milk"), item("e", "Eggs"), item("c", "Bread", { status: "completed" })], { revision: 6 }))
+      : refused("REVISION_CONFLICT", "This changed on another device. Review the latest version.");
+    await confirm();
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true, open_item_ids: ["a"] } }]);
+    expect(host.textContent).toContain("2 items aren't checked. Finish the whole list?");
+    expect(openTitles()).toEqual(["Milk", "Eggs"]);
+    expect(alerts()).toEqual([]);
+
+    // Toast was added as a task, which leaves the list's revision alone: the server refuses with its own count.
+    calls = [];
+    serve = () => refused("LIST_HAS_OPEN_ITEMS", "3 items aren't checked.", { task_id: "L", revision: 6, open_count: 3, open_item_ids: ["a", "e", "t"] });
+    await confirm();
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 6, complete_open_items: true, open_item_ids: ["a", "e"] } }]);
+    expect(host.textContent).toContain("3 items aren't checked. Finish the whole list?");
+    expect(alerts()).toEqual([]);
+
+    calls = [];
+    serve = () => done({ ...quickList([], { status: "completed", revision: 7 }), completed_item_ids: ["a", "e", "t"] });
+    await confirm();
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 6, complete_open_items: true, open_item_ids: ["a", "e", "t"] } }]);
   });
 
   it("finishes a list with nothing open at once", async () => {

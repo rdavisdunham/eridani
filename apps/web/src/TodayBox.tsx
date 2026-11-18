@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { CircleCheck, Ellipsis, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
 import { ApiError } from "./api";
 import { doLabel } from "./date-picks";
-import { heldFocus, uncheckedCount } from "./list-finish";
+import { heldFocus, listRefusal, uncheckedCount } from "./list-finish";
 import { QuickListBody, isOpenItem, parseChecklist, useQuickList, type FinishedList } from "./QuickLists";
 import { useStructureActions } from "./structure-actions";
 import type { QuickList, TodayBoxData } from "./types";
@@ -31,31 +31,43 @@ export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChan
   /** A list just started here: bring the box into view with its add field focused. */
   focusAdd?: boolean;
 }) {
-  const heading = useId(), panel = useRef<HTMLElement>(null), field = useRef<HTMLInputElement | null>(null);
+  const heading = useId(), panel = useRef<HTMLElement>(null), title = useRef<HTMLHeadingElement>(null), field = useRef<HTMLInputElement | null>(null);
   // A finished list's box leaves Today; when it held focus, the toast's Undo takes it.
   const quick = useQuickList(box.target_id, { snapshot: box.list, remember: true, onFinished: finished => onFinished({ ...finished, focus: heldFocus(panel.current) }) });
   const list = quick.list ?? box.list;
-  const [confirm, setConfirm] = useState<number | null>(null), [pinning, setPinning] = useState(false);
-  const open = list.items.filter(isOpenItem).length;
+  // The unchecked items the question names: consent to finish the list covers these and no others.
+  const [confirm, setConfirm] = useState<{ count: number; ids: string[] } | null>(null), [pinning, setPinning] = useState(false);
+  const openIds = list.items.filter(isOpenItem).map(item => item.id), open = openIds.length;
   useEffect(() => {
     if (!focusAdd) return;
     field.current?.focus();
     panel.current?.scrollIntoView?.({ block: "nearest" });
   }, [focusAdd]);
-  const finish = (consent: boolean) => {
+  const finish = (ids?: string[]) => {
     setConfirm(null);
-    void quick.finish(consent).catch(e => {
-      // Items arrived since this box was read: ask first, with the server's count.
-      if (!(e instanceof ApiError) || e.code !== "LIST_HAS_OPEN_ITEMS") return;
-      quick.setError("");
-      setConfirm((e.data as { open_count?: number } | undefined)?.open_count ?? open);
+    void quick.finish(ids).catch(e => {
+      // Unchecked items the box did not show (added elsewhere): ask first, with the server's count.
+      const refusal = listRefusal(e);
+      if (refusal) {
+        quick.setError("");
+        setConfirm({ count: refusal.open_count, ids: refusal.open_item_ids ?? openIds });
+        return;
+      }
+      // The list changed while the person was asked: read it again and ask about what it holds now.
+      if (!ids || !(e instanceof ApiError) || e.code !== "REVISION_CONFLICT") return;
+      void quick.load().then(fresh => {
+        const now = fresh.items.filter(isOpenItem).map(item => item.id);
+        if (!now.length) return;
+        quick.setError("");
+        setConfirm({ count: now.length, ids: now });
+      }, () => {});
     });
   };
   const cancel = () => { setConfirm(null); panel.current?.querySelector<HTMLButtonElement>(".panel-action > button")?.focus(); };
   const pin = () => { setPinning(true); void quick.pin(!box.pinned).then(onChanged, () => {}).finally(() => setPinning(false)); };
   return <section ref={panel} className="panel today-box" aria-labelledby={heading}>
     <header className="panel-header">
-      <h2 id={heading}>{list.title}</h2>
+      <h2 id={heading} ref={title} tabIndex={-1}>{list.title}</h2>
       {!!open && <span className="panel-count">{open}</span>}
       {/* A box here because of its date has no pin to remove; it shows the date instead. */}
       {box.reason === "dated" && box.date && <span className="chip box-date">{dateLabel(box.date, list, today)}</span>}
@@ -66,20 +78,20 @@ export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChan
             {box.pinned ? <><PinOff size={16} aria-hidden="true" />Unpin from Today</> : <><Pin size={16} aria-hidden="true" />Pin to Today</>}
           </button>
           <button type="button" className="menu-item" onClick={() => { close(); onOpen(list); }}><ListChecks size={16} aria-hidden="true" />Open full list</button>
-          {canEdit && <button type="button" className="menu-item" onClick={() => { close(); if (open) setConfirm(open); else finish(false); }}>
+          {canEdit && <button type="button" className="menu-item" onClick={() => { close(); if (open) setConfirm({ count: open, ids: openIds }); else finish(); }}>
             <CircleCheck size={16} aria-hidden="true" />Finish list</button>}
         </div>}
       </Popover>
     </header>
     {confirm !== null && <div className="box-confirm" role="group" aria-label="Finish this list?"
       onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); cancel(); } }}>
-      <p>{uncheckedCount(confirm)} Finish the whole list?</p>
+      <p>{uncheckedCount(confirm.count)} Finish the whole list?</p>
       <div className="box-confirm-actions">
-        <button type="button" className="btn btn-primary btn-sm" autoFocus onClick={() => finish(true)}>Finish list</button>
+        <button type="button" className="btn btn-primary btn-sm" autoFocus onClick={() => finish(confirm.ids)}>Finish list</button>
         <button type="button" className="btn btn-sm" onClick={cancel}>Cancel</button>
       </div>
     </div>}
-    <QuickListBody compact quick={quick} canEdit={canEdit} label={list.title} addRef={field} />
+    <QuickListBody compact quick={quick} canEdit={canEdit} label={list.title} addRef={field} boxRef={title} />
   </section>;
 }
 

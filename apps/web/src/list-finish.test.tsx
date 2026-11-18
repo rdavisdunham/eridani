@@ -49,7 +49,11 @@ const toast = () => host.querySelector(".toast")?.querySelector("span")?.textCon
 const undo = () => [...host.querySelectorAll<HTMLButtonElement>(".toast button")].find(b => b.textContent === "Undo") ?? null;
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find(b => b.textContent === text)!;
 const commands = () => calls.filter(c => c.url === "/api/v1/commands").map(c => ({ tool: c.body.tool, arguments: c.body.arguments }));
-const refusal = (open: number) => new ApiError("LIST_HAS_OPEN_ITEMS", open + " items aren't checked.", { task_id: "L", revision: 5, open_count: open }, 409);
+const refusal = (open: number) => new ApiError("LIST_HAS_OPEN_ITEMS", open + " items aren't checked.",
+  { task_id: "L", revision: 5, open_count: open, open_item_ids: ["a", "b", "c", "d"].slice(0, open) }, 409);
+const ok = (body: unknown): Reply => ({ status: 200, body });
+const refused = (code: string, data?: unknown): Reply => ({ status: 409, body: { error: { code, message: code, data } } });
+const dialog = () => document.querySelector('[role="dialog"]');
 
 describe("a list finished from its box", () => {
   it("says the list is done, moves focus to Undo as the box leaves, survives a switch to Tasks, and Undo unchecks that item", async () => {
@@ -107,7 +111,6 @@ describe("finishing a list that still has unchecked items", () => {
     let handled = false;
     await act(async () => { handled = finish.refused(refusal(2)); });
     expect(handled).toBe(true);
-    const dialog = () => document.querySelector('[role="dialog"]');
     expect(dialog()!.textContent).toContain("Groceries");
     expect(dialog()!.textContent).toContain("2 items aren't checked. Finish the whole list?");
     await act(async () => button("Cancel").click());
@@ -118,7 +121,7 @@ describe("finishing a list that still has unchecked items", () => {
     serve = () => done({ ...quickList([], { status: "completed", revision: 6 }), completed_item_ids: ["a", "b"] });
     await act(async () => button("Finish list").click());
     await flush();
-    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true } }]);
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true, open_item_ids: ["a", "b"] } }]);
     expect(dialog()).toBeNull();
     expect(toast()).toBe("Groceries is done.");
     expect(document.activeElement).toBe(undo());
@@ -129,6 +132,53 @@ describe("finishing a list that still has unchecked items", () => {
     await flush();
     expect(commands().at(-1)).toEqual({ tool: "task.reopen", arguments: { task_id: "L", expected_revision: 6, item_ids: ["a", "b"] } });
     expect(toast()).toBe("Undone.");
+  });
+
+  it("asks again with the server's count when the list changed while it asked, and never resends consent by itself", async () => {
+    await render();
+    await act(async () => { finish.refused(refusal(2)); });
+    serve = () => refused("LIST_HAS_OPEN_ITEMS", { task_id: "L", revision: 5, open_count: 3, open_item_ids: ["a", "b", "c"] });
+    await act(async () => button("Finish list").click());
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true, open_item_ids: ["a", "b"] } }]);
+    expect(dialog()!.textContent).toContain("3 items aren't checked. Finish the whole list?");
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+
+    // The list's revision moved: read it again and ask about what it holds now.
+    calls = [];
+    serve = call => call.url === "/api/v1/quick-lists/L"
+      ? ok(quickList([item("a", "A"), item("b", "B"), item("c", "C"), item("d", "D"), item("x", "X", { status: "completed" })], { revision: 6 }))
+      : refused("REVISION_CONFLICT");
+    await act(async () => button("Finish list").click());
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 5, complete_open_items: true, open_item_ids: ["a", "b", "c"] } }]);
+    expect(dialog()!.textContent).toContain("4 items aren't checked. Finish the whole list?");
+    expect(dialog()!.querySelector('[role="alert"]')).toBeNull();
+
+    calls = [];
+    serve = () => done({ ...quickList([], { status: "completed", revision: 7 }), completed_item_ids: ["a", "b", "c", "d"] });
+    await act(async () => button("Finish list").click());
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "L", expected_revision: 6, complete_open_items: true, open_item_ids: ["a", "b", "c", "d"] } }]);
+    expect(toast()).toBe("Groceries is done.");
+  });
+
+  it("drops a finish that failed to send once the question is cancelled", async () => {
+    await render();
+    await act(async () => { finish.refused(refusal(2)); });
+    serve = () => { throw Error("offline"); };
+    await act(async () => button("Finish list").click());
+    await flush();
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toContain("Connection lost");
+    await act(async () => button("Cancel").click());
+    expect(dialog()).toBeNull();
+    // A later question about another list sends only its own finish.
+    await act(async () => { finish.refused(new ApiError("LIST_HAS_OPEN_ITEMS", "1 item isn't checked.", { task_id: "K", revision: 2, open_count: 1, open_item_ids: ["k"] }, 409)); });
+    calls = [];
+    serve = () => done({ ...quickList([], { id: "K", status: "completed", revision: 3 }), completed_item_ids: ["k"] });
+    await act(async () => button("Finish list").click());
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.complete", arguments: { task_id: "K", expected_revision: 2, complete_open_items: true, open_item_ids: ["k"] } }]);
   });
 
   it("names a single unchecked item, and lets other refusals through", async () => {

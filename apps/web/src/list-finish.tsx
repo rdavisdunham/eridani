@@ -1,18 +1,25 @@
 import { useRef, useState } from "react";
-import { ApiError, command } from "./api";
-import type { FinishedList } from "./QuickLists";
+import { api, ApiError, command } from "./api";
+import { isOpenItem, type FinishedList } from "./QuickLists";
+import type { QuickList } from "./types";
 import { useStructureActions } from "./structure-actions";
 import { useUndoToast } from "./undo-toast";
 import { Dialog } from "./ux";
 
 type Data = Record<string, unknown>;
-/** The server's refusal to finish a quick list that still has unchecked items, unless the owner agrees. */
-type ListRefusal = { task_id: string; revision: number; open_count: number };
 
-function listRefusal(error: unknown): ListRefusal | null {
+/**
+ * The server's refusal to finish a quick list that still has unchecked items, unless the owner agrees. Consent names
+ * the unchecked items it covers, so an item added while the person was asked is not completed with them.
+ */
+type ListRefusal = { task_id: string; revision: number; open_count: number; open_item_ids?: string[] };
+
+export function listRefusal(error: unknown): ListRefusal | null {
   if (!(error instanceof ApiError) || error.code !== "LIST_HAS_OPEN_ITEMS") return null;
   const data = error.data as Partial<ListRefusal> | undefined;
-  return typeof data?.task_id === "string" && typeof data.revision === "number" ? { task_id: data.task_id, revision: data.revision, open_count: data.open_count ?? 0 } : null;
+  if (typeof data?.task_id !== "string" || typeof data.revision !== "number") return null;
+  return { task_id: data.task_id, revision: data.revision, open_count: data.open_count ?? 0,
+    ...(Array.isArray(data.open_item_ids) ? { open_item_ids: data.open_item_ids } : {}) };
 }
 
 /** Nothing has focus, or it is inside `element`: what was focused is leaving, so Undo can take focus. */
@@ -57,7 +64,7 @@ export function useListFinish({ titleOf, onChanged }: { titleOf: (id: string) =>
   latest.current = { titleOf, onChanged };
   const toast = useUndoToast(async () => { await latest.current.onChanged(); });
   const [asking, setAsking] = useState<(ListRefusal & { title?: string }) | null>(null);
-  const { run, busy, error, setError } = useStructureActions();
+  const { run, busy, error, setError, forget } = useStructureActions();
   const finished = (list: FinishedList) => toast.show({ message: list.title + " is done.", undo: list.undo, focus: !!list.focus });
   /** A command's result: when it finished a quick list, shows the toast and returns true. */
   const result = (tool: string, data: unknown) => {
@@ -71,17 +78,30 @@ export function useListFinish({ titleOf, onChanged }: { titleOf: (id: string) =>
     if (refusal) { setError(""); setAsking({ ...refusal, title: latest.current.titleOf(refusal.task_id) }); }
     return !!refusal;
   };
-  const confirm = (ask: ListRefusal) => void run<Data>("task.complete", { task_id: ask.task_id, expected_revision: ask.revision, complete_open_items: true })
-    .then(async data => {
-      setAsking(null);
-      const list = finishedFrom("task.complete", data, id => latest.current.titleOf(id));
-      // The row that asked leaves with the list, so Undo takes focus.
-      if (list) finished({ ...list, focus: true });
-      await latest.current.onChanged();
-    }).catch(() => {});
+  // Consent covers the items the question named, so a change since then asks again rather than sending it twice.
+  const confirm = (ask: ListRefusal) => void run<Data>("task.complete", {
+    task_id: ask.task_id, expected_revision: ask.revision, complete_open_items: true, ...(ask.open_item_ids ? { open_item_ids: ask.open_item_ids } : {}),
+  }).then(async data => {
+    setAsking(null);
+    const list = finishedFrom("task.complete", data, id => latest.current.titleOf(id));
+    // The row that asked leaves with the list, so Undo takes focus.
+    if (list) finished({ ...list, focus: true });
+    await latest.current.onChanged();
+  }).catch(e => {
+    if (refused(e) || !(e instanceof ApiError) || e.code !== "REVISION_CONFLICT") return;
+    void api<QuickList>("/quick-lists/" + ask.task_id).then(fresh => {
+      const open = fresh.items.filter(isOpenItem).map(item => item.id);
+      // Nothing is left to ask about: the list finished, or was emptied, elsewhere.
+      if (!open.length) { cancel(); void latest.current.onChanged(); return; }
+      setError("");
+      setAsking({ ...ask, revision: fresh.revision, open_count: open.length, open_item_ids: open });
+    }, () => {});
+  });
+  /** A finish that failed to send is dropped with the question, so a later command does not send it first. */
+  const cancel = () => { forget(); setAsking(null); };
   const element = <>
     {toast.element}
-    {asking && <Dialog className="dialog" aria-label="Finish the whole list?" onEscape={busy ? undefined : () => setAsking(null)}>
+    {asking && <Dialog className="dialog" aria-label="Finish the whole list?" onEscape={busy ? undefined : cancel}>
       <header className="dialog-heading"><h2>{asking.title ?? "Quick list"}</h2></header>
       {error && <p className="error-banner" role="alert">{error}</p>}
       <p>{uncheckedCount(asking.open_count)} Finish the whole list?</p>
@@ -89,7 +109,7 @@ export function useListFinish({ titleOf, onChanged }: { titleOf: (id: string) =>
           corner, where Report a bug sits while a dialog is open. */}
       <div className="dialog-actions">
         <button type="button" className="btn btn-primary" autoFocus disabled={busy} onClick={() => confirm(asking)}>Finish list</button>
-        <button type="button" className="btn" disabled={busy} onClick={() => setAsking(null)}>Cancel</button>
+        <button type="button" className="btn" disabled={busy} onClick={cancel}>Cancel</button>
       </div>
     </Dialog>}
   </>;

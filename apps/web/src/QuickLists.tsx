@@ -36,6 +36,8 @@ type Write={
  reload?:boolean;
  /** A refusal shows under the add field. */
  add?:boolean;
+ /** Sent once: a revision conflict is not retried, and a send lost to the network is not sent again later. */
+ once?:boolean;
 };
 // Neither the list nor any item both copies hold went back a revision, so `next` is not an older read.
 function fresher(next:QuickList,shown:QuickList|null){
@@ -54,7 +56,7 @@ type QuickListState=ReturnType<typeof useQuickList>;
  * and reads nothing by itself, and `remember` keeps its add field's text; the dialog reads the list when it opens.
  */
 export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFinished}:{snapshot?:QuickList;remember?:boolean;onChanged?:()=>void;onFinished?:(finished:FinishedList)=>void}={}){
- const {run}=useStructureActions();
+ const {run,forget}=useStructureActions();
  const [saved,setSaved]=useState<QuickList|null>(snapshot??null);
  const savedRef=useRef(saved);
  const [writes,setWrites]=useState<Write[]>([]);
@@ -79,7 +81,7 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
     let result:Result|null;
     try{result=await send(savedRef.current!);}
     catch(e){
-     if(!(e instanceof ApiError)||e.code!=="REVISION_CONFLICT")throw e;
+     if(w.once||!(e instanceof ApiError)||e.code!=="REVISION_CONFLICT")throw e;
      // The list changed elsewhere: read it again and try this one change once more.
      result=await send(await load());
     }
@@ -90,12 +92,12 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
     if(inverse)callbacks.current.onFinished?.({id,title:savedRef.current!.title,undo:command(...inverse).send});
     if(result)callbacks.current.onChanged?.();
     return result;
-   }catch(e){fail((e as Error).message);throw e;}
+   }catch(e){if(w.once)forget();fail((e as Error).message);throw e;}
    finally{setWrites(all=>all.filter(x=>x!==w));}
   });
   tail.current=settled.catch(()=>{});
   return settled;
- },[run,load,adopt,setError]);
+ },[run,forget,load,adopt,setError]);
  // Checking or removing the last open item finishes the list; undoing that brings back the one item.
  const reopenItem=(item:Task)=>(result:Result):Command|null=>{
   const after=result.list_finished?(result as unknown as QuickList).items?.find(x=>x.id===item.id):undefined;
@@ -109,6 +111,8 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
  return {
   list:saved&&writes.reduce((shown,w)=>w.change?w.change(shown):shown,saved),
   error,setError,addError,busy:writes.length>0,load,newItem,setNewItem,draft,setDraft,
+  /** The add field's text now, including a refused item put back after the last render. */
+  pendingText:()=>newItemRef.current,
   /** Waits for the changes already asked for; refuses when the last one was refused. */
   settled:async()=>{await tail.current;if(errorRef.current)throw Error(errorRef.current);},
   check:(item:Task,completed:boolean)=>onItem(item,"edit",{completed},{status:completed?"completed":"open"}),
@@ -132,9 +136,13 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
   }}),
   update:(patch:Record<string,unknown>)=>write({reload:true,build:list=>["task.update",{task_id:id,expected_revision:list.revision,...patch}]}),
   promote:(project_id:string|null)=>write({build:list=>["quicklist.promote",{list_id:id,expected_revision:list.revision,project_id}]}),
-  /** Finishes the list. With `consent` its unchecked items are completed with it; the undo reopens all of them. */
-  finish:(consent:boolean)=>write({
-   build:list=>["task.complete",{task_id:id,expected_revision:list.revision,...(consent?{complete_open_items:true}:{})}],
+  /**
+   * Finishes the list. Given the unchecked items the person agreed to, they are completed with it; the undo reopens
+   * all of them. That consent covers only those items, so it is sent once: a conflict comes back to ask again.
+   */
+  finish:(openItemIds?:string[])=>write({
+   once:!!openItemIds,
+   build:list=>["task.complete",{task_id:id,expected_revision:list.revision,...(openItemIds?{complete_open_items:true,open_item_ids:openItemIds}:{})}],
    undo:result=>["task.reopen",{task_id:id,expected_revision:result.revision,item_ids:result.completed_item_ids??[]}],
   }),
   pin:(pinned:boolean)=>pinList(id,pinned).then(value=>{const current=savedRef.current;if(current)adopt({...current,pinned:value},true);return value;},e=>{setError((e as Error).message);throw e;}),
@@ -142,8 +150,10 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
 }
 
 /** The checklist without its dialog: the full list, or (`compact`) the rows of a Today box. */
-export function QuickListBody({quick,canEdit,compact=false,generation=0,label="",addRef}:{quick:QuickListState;canEdit:boolean;compact?:boolean;generation?:number;label?:string;addRef?:RefObject<HTMLInputElement|null>}){
- return compact?<BoxItems quick={quick} canEdit={canEdit} label={label} addRef={addRef}/>:<FullItems quick={quick} canEdit={canEdit} generation={generation}/>;
+export function QuickListBody({quick,canEdit,compact=false,generation=0,label="",addRef,boxRef}:{quick:QuickListState;canEdit:boolean;compact?:boolean;generation?:number;label?:string;addRef?:RefObject<HTMLInputElement|null>;
+ /** The box's own focus target (its heading), where focus waits while a change finishes the list. */
+ boxRef?:RefObject<HTMLElement|null>}){
+ return compact?<BoxItems quick={quick} canEdit={canEdit} label={label} addRef={addRef} boxRef={boxRef}/>:<FullItems quick={quick} canEdit={canEdit} generation={generation}/>;
 }
 
 function FullItems({quick,canEdit,generation}:{quick:QuickListState;canEdit:boolean;generation:number}){
@@ -174,22 +184,30 @@ function ItemText({item,canEdit,onRename}:{item:Task;canEdit:boolean;onRename:(t
   onBlur={e=>{const title=e.currentTarget.value.trim();if(!discard.current&&title&&title!==item.title)onRename(title);discard.current=false;setEditing(false);}}/>;
 }
 
-function BoxItems({quick,canEdit,label,addRef}:{quick:QuickListState;canEdit:boolean;label:string;addRef?:RefObject<HTMLInputElement|null>}){
+function BoxItems({quick,canEdit,label,addRef,boxRef}:{quick:QuickListState;canEdit:boolean;label:string;addRef?:RefObject<HTMLInputElement|null>;boxRef?:RefObject<HTMLElement|null>}){
  const list=quick.list!;
  const open=list.items.filter(isOpenItem),done=list.items.filter(item=>onList(item)&&item.status==="completed");
  const empty=done.length?"All done":canEdit?"Add your first item.":"No items yet.";
  const checks=useRef(new Map<string,HTMLButtonElement>()),field=useRef<HTMLInputElement|null>(null),focusNext=useRef<string|null>(null);
  // When a checked or removed item leaves the open items, focus goes to the next one's check, or to the add field.
- useLayoutEffect(()=>{const target=focusNext.current;if(!target)return;focusNext.current=null;(target==="add"?field.current:checks.current.get(target))?.focus();});
- const leave=(item:Task,control:HTMLElement)=>{if(document.activeElement===control)focusNext.current=open[open.findIndex(x=>x.id===item.id)+1]?.id??"add";};
+ // When the change finishes the list, focus waits on the box instead, so the toast's Undo can take it as the box
+ // leaves; it moves on to the add field if the change is refused or the list stays open after all.
+ useLayoutEffect(()=>{const target=focusNext.current;if(!target)return;focusNext.current=null;(target==="add"?field.current:target==="box"?boxRef?.current??field.current:checks.current.get(target))?.focus();});
+ const change=(item:Task,control:HTMLElement,checking:boolean,send:()=>Promise<Result|null>)=>{
+  // The last open item, checked or removed while something is checked: the server finishes the list.
+  const finishing=open.length===1&&(checking||list.items.some(x=>x.id!==item.id&&x.status==="completed"));
+  if(document.activeElement===control)focusNext.current=finishing?"box":open[open.findIndex(x=>x.id===item.id)+1]?.id??"add";
+  const stayed=()=>{if(boxRef?.current&&document.activeElement===boxRef.current)field.current?.focus();};
+  void send().then(result=>{if(finishing&&!result?.list_finished)stayed();},()=>{if(finishing)stayed();});
+ };
  const setField=(element:HTMLInputElement|null)=>{field.current=element;if(addRef)addRef.current=element;};
  return <>
   {quick.error&&<p className="today-error" role="alert">{quick.error}</p>}
   {open.length?<ul className="today-rows box-open">{open.map(item=><li key={item.id} className="row today-row box-item">
    {canEdit&&<button type="button" className="check" aria-label={"Check off "+item.title} ref={element=>{if(element)checks.current.set(item.id,element);else checks.current.delete(item.id);}}
-    onClick={e=>{leave(item,e.currentTarget);void quick.check(item,true).catch(()=>{});}}><Check aria-hidden="true"/></button>}
+    onClick={e=>change(item,e.currentTarget,true,()=>quick.check(item,true))}><Check aria-hidden="true"/></button>}
    <div className="row-main"><ItemText item={item} canEdit={canEdit} onRename={title=>void quick.rename(item,title).catch(()=>{})}/>{item.quick_section&&<span className="box-item-section">{item.quick_section}</span>}</div>
-   {canEdit&&<div className="row-actions"><button type="button" className="btn-icon box-remove" aria-label={"Remove "+item.title} onClick={e=>{leave(item,e.currentTarget);void quick.remove(item).catch(()=>{});}}><X aria-hidden="true"/></button></div>}
+   {canEdit&&<div className="row-actions"><button type="button" className="btn-icon box-remove" aria-label={"Remove "+item.title} onClick={e=>change(item,e.currentTarget,false,()=>quick.remove(item))}><X aria-hidden="true"/></button></div>}
   </li>)}</ul>
    :<p className="box-state">{empty}</p>}
   {canEdit&&<form className="box-add" onSubmit={e=>{e.preventDefault();if(quick.newItem.trim())void quick.add(quick.newItem).catch(()=>{});}}>
@@ -222,7 +240,7 @@ export function QuickListDetail({id,onClose,onChanged,canEdit=true,refresh=0}:{r
  useEffect(()=>{void api<{items:{id:string;name:string}[]}>("/projects").then(d=>setProjects(d.items)).catch(()=>{});},[id]);
  const seen=useRef(refresh);
  useEffect(()=>{if(seen.current===refresh)return;seen.current=refresh;if(!busy&&!draft&&!newItem.trim()&&!error)void quick.load().catch(e=>setError(e.message));},[refresh]);
- const finish=async()=>{if(card.current?.contains(document.activeElement))(document.activeElement as HTMLElement)?.blur();await quick.settled();if(newItem.trim())throw Error("Add or clear the unsaved checklist item before leaving.");};
+ const finish=async()=>{if(card.current?.contains(document.activeElement))(document.activeElement as HTMLElement)?.blur();await quick.settled();if(quick.pendingText().trim())throw Error("Add or clear the unsaved checklist item before leaving.");};
  const close=()=>void finish().then(onClose).catch(e=>setError(e.message));
  useEditor({kind:"task",record_id:id,mode:"detail",auto_save:true,dirty:draft||!!newItem.trim(),busy:!list,schema:z.object({}),values:list?{title:list.title,items:list.items}: {},beforeLeave:finish,patch:async()=>{throw Error("Use Quick capture tools to edit this checklist.");},close:onClose});
  const metadata=(patch:Record<string,unknown>)=>void quick.update(patch).catch(()=>{});

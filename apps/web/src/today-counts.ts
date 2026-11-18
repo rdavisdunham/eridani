@@ -2,8 +2,10 @@ import type { Task } from "./types";
 import { scheduledBy } from "./productivity";
 import { finishedBySync, finishedToday, isFinishedTask } from "./task-finished";
 
-/** Open work of its own: not finished, archived or a template, and not an item inside a quick list. */
-export const isOpen = (t: Task) => !t.archived && !t.quick_list_parent_id && !t.is_template && !isFinishedTask(t);
+/** Not finished, archived or a template. */
+const live = (t: Task) => !t.archived && !t.is_template && !isFinishedTask(t);
+/** Open work of its own: live, and not an item inside a quick list. */
+const isOpen = (t: Task) => live(t) && !t.quick_list_parent_id;
 
 /**
  * Today's "Due and overdue": every open task planned or due by today, in date order. It is the safety net, so a
@@ -11,8 +13,7 @@ export const isOpen = (t: Task) => !t.archived && !t.quick_list_parent_id && !t.
  */
 export function dueTasks(tasks: Task[], today: string) {
   const openLists = new Set(tasks.filter(t => t.is_quick_list && !t.archived && !isFinishedTask(t)).map(t => t.id));
-  const datedItem = (t: Task) => !!t.quick_list_parent_id && openLists.has(t.quick_list_parent_id) && !t.archived && !t.is_template && !isFinishedTask(t);
-  return tasks.filter(t => (isOpen(t) || datedItem(t)) && scheduledBy(t, today)).sort((a, b) =>
+  return tasks.filter(t => live(t) && (!t.quick_list_parent_id || openLists.has(t.quick_list_parent_id)) && scheduledBy(t, today)).sort((a, b) =>
     (a.due_date ?? a.planned_date ?? "9999").localeCompare(b.due_date ?? b.planned_date ?? "9999") ||
     (a.due_time ?? "99:99").localeCompare(b.due_time ?? "99:99") || b.priority - a.priority || a.title.localeCompare(b.title));
 }

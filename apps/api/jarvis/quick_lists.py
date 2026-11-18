@@ -52,8 +52,9 @@ def on_list(items):
     """Open items and checked items not yet archived: what the cap and reorder count."""
     return [x for x in items if not x.archived and x.status!="cancelled"]
 
-def read(db,owner,identity,account=None):
-    """The list with its items, and whether it is pinned to this person's Today (the person acting by default)."""
+def read(db,owner,identity,account=None,pinned=None):
+    """The list with its items, and whether it is pinned to this person's Today (the person acting by default).
+    A caller that already knows the pin passes `pinned`, which saves looking it up."""
     from .access import actor
     from .today import QUICK_LIST, is_pinned
     row=owned(db,Task,identity,owner)
@@ -65,18 +66,18 @@ def read(db,owner,identity,account=None):
     items=[*shown,*(x for x in items if x.id not in ids)]
     # A removed (cancelled) item counts as neither open nor done.
     return {**serial(row),"items":[serial(x) for x in items],"done":sum(x.status=="completed" for x in items),"total":sum(x.status!="cancelled" for x in items),
-            "pinned":is_pinned(db,owner,account or actor(db,owner),QUICK_LIST,row.id)}
+            "pinned":is_pinned(db,owner,account or actor(db,owner),QUICK_LIST,row.id) if pinned is None else pinned}
 
 def listing(db,owner,query="",account=None,pinned=None):
     """Lists by list or item title. `pinned=True` gives this person's pinned lists in any state, finished and
     archived ones included, so one can be found and reopened; `pinned=False` gives the unpinned lists."""
     from .access import actor
     from .text_normalize import sql_filter
-    from .today import QUICK_LIST, pins
+    from .today import pinned_lists
     account=account or actor(db,owner)
+    mine=pinned_lists(db,owner,account)
     q=select(Task).where(Task.owner_id==owner,Task.is_quick_list.is_(True))
     if pinned is not None:
-        mine=[p.target_id for p in pins(db,owner,account) if p.kind==QUICK_LIST]
         q=q.where(Task.id.in_(mine) if pinned else Task.id.not_in(mine))
     if not pinned:
         q=q.where(Task.archived.is_(False))
@@ -84,7 +85,17 @@ def listing(db,owner,query="",account=None,pinned=None):
         matches=select(Task.parent_task_id).where(Task.owner_id==owner,sql_filter(query,Task.title))
         q=q.where(sql_filter(query,Task.title) | Task.id.in_(matches))
     rows=list(db.scalars(q.order_by(Task.updated_at.desc()).limit(100)))
-    return {"items":[read(db,owner,r.id,account) for r in rows],"limit":100}
+    return {"items":[read(db,owner,r.id,account,pinned=r.id in mine) for r in rows],"limit":100}
+
+def tool_read(db,owner,account,name,arguments):
+    """The today_boxes, quicklist_get and quicklist_list reads Dani, bot keys and queued work share. The pins
+    are `account`'s, the person the read is for, not the workspace's."""
+    from .today import boxes
+    if name=="today_boxes":
+        return {"boxes":boxes(db,owner,account)}
+    if name=="quicklist_get":
+        return read(db,owner,arguments["list_id"],account)
+    return listing(db,owner,arguments.get("query",""),account=account,pinned=arguments.get("pinned"))
 
 def core(db,owner,tool,args,command_id):
     from .domain import mutate
@@ -155,7 +166,7 @@ def settle(db,owner,data,command_id):
     if not changed or not isinstance(data,dict):return
     for outcome in set(changed.values()):data[outcome]=True
     if "items" in data and data.get("id") in changed:
-        identity=data["id"];data.update(read(db,owner,identity))
+        identity=data["id"];data.update(read(db,owner,identity,pinned=data.get("pinned")))
     else:
         identity=next(reversed(changed))
     # The receipt names the list and its new revision, so an undo or a second add needs no re-read.
@@ -183,7 +194,7 @@ def mutate(db,owner,tool,args,command_id):
             from .today import QUICK_LIST, pin
             pin(db,owner,actor(db,owner),QUICK_LIST,row.id)
         db.flush()
-        return read(db,owner,row.id)
+        return read(db,owner,row.id,pinned=pinned)
     row=owned(db,Task,args.list_id,owner,lock=True)
     check_revision(row,args.expected_revision)
     if not row.is_quick_list or (row.archived and not reopens(tool,args,row)):

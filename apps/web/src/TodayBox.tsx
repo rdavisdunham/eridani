@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { CircleCheck, Ellipsis, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
 import { ApiError } from "./api";
 import { doLabel } from "./date-picks";
-import { heldFocus } from "./list-finish";
+import { heldFocus, uncheckedCount } from "./list-finish";
 import { QuickListBody, isOpenItem, parseChecklist, useQuickList, type FinishedList } from "./QuickLists";
 import { useStructureActions } from "./structure-actions";
 import type { QuickList, TodayBoxData } from "./types";
@@ -73,7 +73,7 @@ export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChan
     </header>
     {confirm !== null && <div className="box-confirm" role="group" aria-label="Finish this list?"
       onKeyDown={e => { if (e.key === "Escape") { e.stopPropagation(); cancel(); } }}>
-      <p>{confirm === 1 ? "1 item isn't checked." : confirm + " items aren't checked."} Finish the whole list?</p>
+      <p>{uncheckedCount(confirm)} Finish the whole list?</p>
       <div className="box-confirm-actions">
         <button type="button" className="btn btn-primary btn-sm" autoFocus onClick={() => finish(true)}>Finish list</button>
         <button type="button" className="btn btn-sm" onClick={cancel}>Cancel</button>
@@ -122,7 +122,7 @@ export function TodayBoxes({ boxes, today, canEdit, onOpen, onChanged, onFinishe
 }) {
   const [started, setStarted] = useState<QuickList[]>([]), [focus, setFocus] = useState<string | null>(null);
   const read = boxes ?? [], known = new Set(read.map(box => box.target_id));
-  useEffect(() => { setStarted(lists => lists.filter(list => !known.has(list.id))); }, [boxes]);
+  useEffect(() => { setStarted(lists => lists.some(list => known.has(list.id)) ? lists.filter(list => !known.has(list.id)) : lists); }, [boxes]);
   const drop = (id: string) => setStarted(lists => lists.filter(list => list.id !== id));
   const shown = [...read, ...started.filter(list => !known.has(list.id))
     .map((list): TodayBoxData => ({ kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, list }))];

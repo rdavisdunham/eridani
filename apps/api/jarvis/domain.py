@@ -395,7 +395,6 @@ def serial(record):
                     Task.owner_id == record.owner_id, Task.parent_task_id == record.id,
                     Task.archived.is_(False) | ((Task.archive_reason == "automatic") & Task.status.in_(("completed", "cancelled"))),
                 )
-                # A removed (cancelled) item counts as neither open nor done.
                 result["quick_total"] = db.scalar(select(func.count()).select_from(checklist.where(Task.status != "cancelled").subquery()))
                 result["quick_done"] = db.scalar(select(func.count()).select_from(checklist.where(Task.status == "completed").subquery()))
             parent = db.get(Task, record.parent_task_id) if record.parent_task_id else None
@@ -839,9 +838,9 @@ def mutate(db, owner, tool, args, command_id):
     if tool.startswith("task."):
         task = owned(db, Task, args.task_id, owner, lock=True)
         check_revision(task, args.expected_revision)
-        before = (task.status, task.archived, task.parent_task_id)
+        old_status, old_archived, old_parent = task.status, task.archived, task.parent_task_id
         changes = args.model_dump(
-            exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items", "item_ids"})
+            exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items"})
         if tool == "task.complete":
             changes = {"status": "completed"}
         elif tool == "task.reopen":
@@ -858,10 +857,10 @@ def mutate(db, owner, tool, args, command_id):
         }:
             raise DomainError("INVALID_ARGUMENT", "Unknown task status.")
         nulls("task.update", changes)
-        completed_items = None
+        extra = {}
         if task.is_quick_list and changes.get("status") == "completed" and task.status != "completed":
             from .quick_lists import complete_open_items
-            completed_items = complete_open_items(
+            extra["completed_item_ids"] = complete_open_items(
                 db, owner, task, consent=args.complete_open_items, command_id=command_id)
         if any(key in changes for key in ("due_date", "due_time", "due_timezone")):
             changes = task_timing(db, owner, changes, task)
@@ -900,22 +899,15 @@ def mutate(db, owner, tool, args, command_id):
             task.revision += 1
             task.updated_at = now()
             emit(db, owner, "task.changed", task.id, task.revision)
-        old_status, old_archived, old_parent = before
         if (task.status != old_status or task.parent_task_id != old_parent
                 or (task.archived != old_archived and task.status not in {"completed", "cancelled"})):
             # An item's state or membership changed: its quick list settles at the end of the command.
             from .quick_lists import touch
             touch(db, old_parent, task.parent_task_id)
-        reopened_items = None
         if tool == "task.reopen" and args.item_ids:
             from .quick_lists import reopen_items
-            reopened_items = reopen_items(db, owner, task, args.item_ids, command_id)
-        result = serial(task)
-        if completed_items is not None:
-            result["completed_item_ids"] = completed_items
-        if reopened_items is not None:
-            result["reopened_item_ids"] = reopened_items
-        return result
+            extra["reopened_item_ids"] = reopen_items(db, owner, task, args.item_ids, command_id)
+        return {**serial(task), **extra}
     if tool == "schedule.create":
         if args.kind not in {"reminder", "recurring_task"}:
             raise DomainError("INVALID_ARGUMENT", "Choose a reminder or recurring task.")

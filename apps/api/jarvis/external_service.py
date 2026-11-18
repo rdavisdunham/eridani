@@ -534,17 +534,9 @@ LIST_READS = {"quicklist_list", "quicklist_get", "today_boxes"}
 
 def list_read(db, bot, name, arguments):
     """Quick-list and Today reads shared by MCP and queued work. Pins are the key holder's, not the workspace's."""
-    from .quick_lists import listing, read
-    from .today import boxes
+    from .quick_lists import tool_read
 
-    if name == "today_boxes":
-        result = {"boxes": boxes(db, bot.owner_id, bot.account_id)}
-    elif name == "quicklist_get":
-        result = read(db, bot.owner_id, arguments["list_id"], bot.account_id)
-    else:
-        result = listing(db, bot.owner_id, arguments.get("query", ""), account=bot.account_id,
-                         pinned=arguments.get("pinned"))
-    return scrub(result, bot.scopes)
+    return scrub(tool_read(db, bot.owner_id, bot.account_id, name, arguments), bot.scopes)
 
 
 def cancel_work(db, bot, identity):

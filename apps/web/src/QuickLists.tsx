@@ -11,11 +11,11 @@ function CaptureGuard({busy,dirty,close}:{busy:boolean;dirty:boolean;close:()=>v
 export function parseChecklist(text:string){let section="";return text.split("\n").flatMap(line=>{const value=line.trim();if(!value)return [];if(value.startsWith("# ")){section=value.slice(2).trim();return [];}return [{title:value.replace(/^[-*] (?:\[ \] )?/,""),section}];});}
 
 /** Still on the list: not removed, and not archived away as history. Reorder and the "N done" line count only these. */
-export const onList=(item:Task)=>!item.archived&&item.status!=="cancelled";
+const onList=(item:Task)=>!item.archived&&item.status!=="cancelled";
 export const isOpenItem=(item:Task)=>onList(item)&&item.status!=="completed";
 
 /** Pins or unpins a quick list on this person's own Today. Pins are per person, so a viewer can pin too. */
-export function pinList(id:string,pinned:boolean){
+function pinList(id:string,pinned:boolean){
  return post<{data:{pinned:boolean}}>("/today/pins",{command_id:commandId(),target_id:id,pinned}).then(result=>result.data.pinned);
 }
 
@@ -43,12 +43,10 @@ function fresher(next:QuickList,shown:QuickList|null){
  const seen=new Map(shown.items.map(item=>[item.id,item.revision]));
  return next.revision>=shown.revision&&next.items.every(item=>item.revision>=(seen.get(item.id)??0));
 }
-/** Sends the command; sending it again after a lost connection reuses its command ID. */
-function once([tool,args]:Command){const pending=command(tool,args);return ()=>pending.send();}
 // Unsaved text in each box's add field, kept for this tab: it survives leaving Today and coming back.
 const drafts=new Map<string,string>();
 
-export type QuickListState=ReturnType<typeof useQuickList>;
+type QuickListState=ReturnType<typeof useQuickList>;
 /**
  * One quick list, read and changed the same way by its dialog and its Today box. Each change shows at once and
  * waits its turn, so it is sent with the revision the change before it produced. After a revision conflict the
@@ -89,7 +87,7 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
     else if(Array.isArray(result?.items))adopt(result as unknown as QuickList);
     setDraft(false);
     const inverse=result&&w.undo?.(result);
-    if(inverse)callbacks.current.onFinished?.({id,title:savedRef.current!.title,undo:once(inverse)});
+    if(inverse)callbacks.current.onFinished?.({id,title:savedRef.current!.title,undo:command(...inverse).send});
     if(result)callbacks.current.onChanged?.();
     return result;
    }catch(e){fail((e as Error).message);throw e;}
@@ -179,6 +177,7 @@ function ItemText({item,canEdit,onRename}:{item:Task;canEdit:boolean;onRename:(t
 function BoxItems({quick,canEdit,label,addRef}:{quick:QuickListState;canEdit:boolean;label:string;addRef?:RefObject<HTMLInputElement|null>}){
  const list=quick.list!;
  const open=list.items.filter(isOpenItem),done=list.items.filter(item=>onList(item)&&item.status==="completed");
+ const empty=done.length?"All done":canEdit?"Add your first item.":"No items yet.";
  const checks=useRef(new Map<string,HTMLButtonElement>()),field=useRef<HTMLInputElement|null>(null),focusNext=useRef<string|null>(null);
  // When a checked or removed item leaves the open items, focus goes to the next one's check, or to the add field.
  useLayoutEffect(()=>{const target=focusNext.current;if(!target)return;focusNext.current=null;(target==="add"?field.current:checks.current.get(target))?.focus();});
@@ -192,7 +191,7 @@ function BoxItems({quick,canEdit,label,addRef}:{quick:QuickListState;canEdit:boo
    <div className="row-main"><ItemText item={item} canEdit={canEdit} onRename={title=>void quick.rename(item,title).catch(()=>{})}/>{item.quick_section&&<span className="box-item-section">{item.quick_section}</span>}</div>
    {canEdit&&<div className="row-actions"><button type="button" className="btn-icon box-remove" aria-label={"Remove "+item.title} onClick={e=>{leave(item,e.currentTarget);void quick.remove(item).catch(()=>{});}}><X aria-hidden="true"/></button></div>}
   </li>)}</ul>
-   :<p className="box-state">{done.length?"All done":canEdit?"Add your first item.":"No items yet."}</p>}
+   :<p className="box-state">{empty}</p>}
   {canEdit&&<form className="box-add" onSubmit={e=>{e.preventDefault();if(quick.newItem.trim())void quick.add(quick.newItem).catch(()=>{});}}>
    <input ref={setField} aria-label={"Add to "+label} placeholder="Add an item…" maxLength={500} value={quick.newItem} onChange={e=>quick.setNewItem(e.target.value)}/>
    <button className="btn btn-soft btn-sm" disabled={!quick.newItem.trim()}>Add</button>

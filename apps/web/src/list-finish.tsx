@@ -7,9 +7,9 @@ import { Dialog } from "./ux";
 
 type Data = Record<string, unknown>;
 /** The server's refusal to finish a quick list that still has unchecked items, unless the owner agrees. */
-export type ListRefusal = { task_id: string; revision: number; open_count: number };
+type ListRefusal = { task_id: string; revision: number; open_count: number };
 
-export function listRefusal(error: unknown): ListRefusal | null {
+function listRefusal(error: unknown): ListRefusal | null {
   if (!(error instanceof ApiError) || error.code !== "LIST_HAS_OPEN_ITEMS") return null;
   const data = error.data as Partial<ListRefusal> | undefined;
   return typeof data?.task_id === "string" && typeof data.revision === "number" ? { task_id: data.task_id, revision: data.revision, open_count: data.open_count ?? 0 } : null;
@@ -21,27 +21,29 @@ export function heldFocus(element?: Element | null) {
   return !active || active === document.body || !!element?.contains(active);
 }
 
-/** Sends the command; sending it again after a lost connection reuses its command ID. */
-function once(tool: string, args: Data) { const pending = command(tool, args); return () => pending.send(); }
+/** "1 item isn't checked." or "3 items aren't checked.", before asking to finish the whole list. */
+export function uncheckedCount(count: number) {
+  return count === 1 ? "1 item isn't checked." : count + " items aren't checked.";
+}
 
 /**
  * The list a command's result finished, with the command that undoes it; null when it finished none. A task or
  * Tasks-page change that checked a list's last item is undone by unchecking that item, which reopens the list.
  * Completing the list itself is undone by reopening it with the items it completed.
  */
-export function finishedFrom(tool: string, data: unknown, titleOf: (id: string) => string | undefined): FinishedList | null {
+function finishedFrom(tool: string, data: unknown, titleOf: (id: string) => string | undefined): FinishedList | null {
   if (!data || typeof data !== "object") return null;
   const result = data as Data;
   const task = tool === "task.complete" || tool === "task.update";
   if (task && result.is_quick_list && result.status === "completed" && Array.isArray(result.completed_item_ids))
-    return { id: String(result.id), title: String(result.title), undo: once("task.reopen", { task_id: result.id, expected_revision: result.revision, item_ids: result.completed_item_ids }) };
+    return { id: String(result.id), title: String(result.title), undo: command("task.reopen", { task_id: result.id, expected_revision: result.revision, item_ids: result.completed_item_ids }).send };
   const list = result.list_id;
   if (!result.list_finished || typeof list !== "string" || result.quick_list_parent_id !== list) return null;
   const item = task ? { id: result.id, revision: result.revision } : tool === "record.update" ? { id: result.task_id, revision: result.task_revision } : null;
   if (!item) return null;
-  return { id: list, title: titleOf(list) ?? "Your list", undo: once("quicklist.item", {
+  return { id: list, title: titleOf(list) ?? "Your list", undo: command("quicklist.item", {
     list_id: list, expected_revision: result.list_revision, operation: "edit", item_id: item.id, expected_item_revision: item.revision, completed: false,
-  }) };
+  }).send };
 }
 
 export type ListFinish = ReturnType<typeof useListFinish>;
@@ -77,13 +79,12 @@ export function useListFinish({ titleOf, onChanged }: { titleOf: (id: string) =>
       if (list) finished({ ...list, focus: true });
       await latest.current.onChanged();
     }).catch(() => {});
-  const count = asking?.open_count === 1 ? "1 item isn't checked." : asking?.open_count + " items aren't checked.";
   const element = <>
     {toast.element}
     {asking && <Dialog className="dialog" aria-label="Finish the whole list?" onEscape={busy ? undefined : () => setAsking(null)}>
       <header className="dialog-heading"><h2>{asking.title ?? "Quick list"}</h2></header>
       {error && <p className="error-banner" role="alert">{error}</p>}
-      <p>{count} Finish the whole list?</p>
+      <p>{uncheckedCount(asking.open_count)} Finish the whole list?</p>
       {/* The same order as the question inside a box. On a phone it also keeps Cancel out of the bottom-left
           corner, where Report a bug sits while a dialog is open. */}
       <div className="dialog-actions">

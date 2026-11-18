@@ -647,15 +647,9 @@ async def _call_tool(owner, turn_id, index, name, arguments, *, device=None, con
                 from .onboarding import state
                 return state(db,owner)
             from .access import actor
-            from .quick_lists import listing,read
-            from .today import boxes
+            from .quick_lists import tool_read
             # Pins belong to a person: read them for whoever Dani is working for, not the workspace.
-            account=actor(db,owner)
-            if name=="today_boxes":
-                return {"boxes":boxes(db,owner,account)}
-            if name=="quicklist_get":
-                return read(db,owner,arguments["list_id"],account)
-            return listing(db,owner,arguments.get("query",""),account=account,pinned=arguments.get("pinned"))
+            return tool_read(db,owner,actor(db,owner),name,arguments)
     if name in {"task_get", "note_read", "note_extract"}:
         from uuid import UUID
 

@@ -7,7 +7,7 @@ It lasts until that person removes it. A pin is not task data: removing one neve
 from sqlalchemy import delete, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .domain import DomainError, emit, owned, preferences, zone
+from .domain import DomainError, emit, owned
 from .models import Task, TodayPin, now
 
 # The kind stored for a quick list's box. The today_pins migration writes the same value for converted lists.
@@ -33,6 +33,11 @@ def pins(db, owner, account):
     """This person's pins, oldest first: the order of their boxes on Today."""
     return list(db.scalars(select(TodayPin).where(TodayPin.owner_id == owner, TodayPin.account_id == account)
                            .order_by(TodayPin.pinned_at, TodayPin.target_id)))
+
+
+def pinned_lists(db, owner, account):
+    """The quick lists this person pinned, in pin order."""
+    return [p.target_id for p in pins(db, owner, account) if p.kind == QUICK_LIST]
 
 
 def is_pinned(db, owner, account, kind, target_id):
@@ -66,17 +71,20 @@ def boxes(db, owner, account, day=None):
     Pinned lists come first, in the order they were pinned. Unpinned lists whose due date or do date has arrived
     follow, by that date and then title. A finished, archived or promoted list has no box but keeps its pin, so a
     reopen brings the box back in its place."""
+    from .agent_link import owner_today
     from .quick_lists import FINISHED, read
 
-    day = day or now().astimezone(zone(preferences(db, owner)["timezone"])).date()
-    pinned = [p.target_id for p in pins(db, owner, account) if p.kind == QUICK_LIST]
+    day = day or owner_today(db, owner)
+    pinned = pinned_lists(db, owner, account)
     showing = (Task.owner_id == owner, Task.is_quick_list.is_(True), Task.archived.is_(False),
                Task.status.not_in(FINISHED))
     rows = {row.id: row for row in db.scalars(select(Task).where(*showing, Task.id.in_(pinned)))}
 
     def box(row, reason, since=None):
-        return {"kind": QUICK_LIST, "target_id": row.id, "reason": reason, "pinned": reason == "pinned",
-                "date": since.isoformat() if since else None, "list": read(db, owner, row.id, account)}
+        mine = reason == "pinned"
+        return {"kind": QUICK_LIST, "target_id": row.id, "reason": reason, "pinned": mine,
+                "date": since.isoformat() if since else None,
+                "list": read(db, owner, row.id, account, pinned=mine)}
 
     def arrived(row):
         return min(d for d in (row.due_date, row.planned_date) if d and d <= day)

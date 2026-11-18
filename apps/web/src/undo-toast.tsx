@@ -7,8 +7,8 @@ export type UndoToastState = {
   focus?: boolean;
 } | null;
 /**
- * A six-second status toast with an optional Undo button (templates, Mark reviewed, a finished list). It stays while
- * focus is on it, and its six seconds start again once focus moves on.
+ * A six-second status toast with an optional Undo button. It stays while focus is on it, and its six seconds start
+ * again once focus moves on.
  */
 export function useUndoToast(onUndone?: () => Promise<void> | void, undoneMessage = "Undone.") {
   const [toast, setToast] = useState<UndoToastState>(null), [busy, setBusy] = useState(false), [held, setHeld] = useState(false);

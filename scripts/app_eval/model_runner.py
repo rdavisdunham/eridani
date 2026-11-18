@@ -431,6 +431,7 @@ def make_quick_lists(owner, specs):
     """Create a probe's quick lists with the app's own commands; return each list's ID by key."""
     from jarvis.db import session_scope
     from jarvis.domain import execute
+    from jarvis.task_archive import GRACE
     from sqlalchemy import text
 
     def run(name, args):
@@ -459,7 +460,6 @@ def make_quick_lists(owner, specs):
                 },
             )
         if archived:
-            # The automatic archive files a finished list and its checked items a day after they finish.
             at = datetime.now(UTC) - timedelta(days=archived)
             with session_scope() as db:
                 db.execute(
@@ -467,7 +467,7 @@ def make_quick_lists(owner, specs):
                         "UPDATE tasks SET archived=true, archive_reason='automatic', archived_at=:at,"
                         " archive_eligible_at=:at, finished_at=:done, completed_at=:done WHERE id = ANY(:ids)"
                     ),
-                    {"at": at, "done": at - timedelta(days=1), "ids": [data["id"], *(x["id"] for x in data["items"])]},
+                    {"at": at, "done": at - GRACE, "ids": [data["id"], *(x["id"] for x in data["items"])]},
                 )
         made[spec["key"]] = {"id": data["id"]}
     return made

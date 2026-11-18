@@ -1,5 +1,28 @@
 import type { Task } from "./types";
-import { finishedBySync, finishedToday } from "./task-finished";
+import { scheduledBy } from "./productivity";
+import { finishedBySync, finishedToday, isFinishedTask } from "./task-finished";
+
+/** Open work of its own: not finished, archived or a template, and not an item inside a quick list. */
+export const isOpen = (t: Task) => !t.archived && !t.quick_list_parent_id && !t.is_template && !isFinishedTask(t);
+
+/**
+ * Today's "Due and overdue": every open task planned or due by today, in date order. It is the safety net, so a
+ * task that also shows in a box stays here, and so does a quick-list item with its own date while its list is open.
+ */
+export function dueTasks(tasks: Task[], today: string) {
+  const openLists = new Set(tasks.filter(t => t.is_quick_list && !t.archived && !isFinishedTask(t)).map(t => t.id));
+  const datedItem = (t: Task) => !!t.quick_list_parent_id && openLists.has(t.quick_list_parent_id) && !t.archived && !t.is_template && !isFinishedTask(t);
+  return tasks.filter(t => (isOpen(t) || datedItem(t)) && scheduledBy(t, today)).sort((a, b) =>
+    (a.due_date ?? a.planned_date ?? "9999").localeCompare(b.due_date ?? b.planned_date ?? "9999") ||
+    (a.due_time ?? "99:99").localeCompare(b.due_time ?? "99:99") || b.priority - a.priority || a.title.localeCompare(b.title));
+}
+
+/** Today's Inbox: open, unfiled tasks that are not already due. A quick list with a box on Today is not also a row. */
+export function inboxTasks(tasks: Task[], due: Task[], boxed: Set<string>) {
+  const dueIds = new Set(due.map(t => t.id));
+  return tasks.filter(t => isOpen(t) && !dueIds.has(t.id) && !boxed.has(t.id) && !t.project_id && !t.space_id && !t.area_id)
+    .sort((a, b) => b.priority - a.priority || b.created_at.localeCompare(a.created_at));
+}
 
 /** Why an open task is on Today's "Due and overdue" list. Each task lands in exactly one bucket, so the
  *  parts always add up to the card's count: a deadline wins over a planned day, the past over today. */

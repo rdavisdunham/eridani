@@ -24,7 +24,8 @@ import { templatesFor } from "./template-model";
 import { organizationalContainer, type Schema, type CustomRecord, type Proposal } from "./structure-types";
 import "./tasks.css";
 import { useSemanticSearch } from "./semantic-search";
-import { inHome, inTab, matchesQuery, rankOrder } from "./record-filters";
+import { inHome, inTab, matchesQuery, openQuickLists, quickItemShown, rankOrder } from "./record-filters";
+import type { ListFinish } from "./list-finish";
 import { meanings, describe, openTarget } from "./structure-types";
 import { Popover, priorityLabels, useMaxWidth } from "./ux";
 import { clockLabel, dueBucket, dueBuckets, monthDay, shortDate } from "./work-views";
@@ -43,7 +44,9 @@ const AtlasView = lazy(() => import("./AtlasView"));
 export const ATLAS_MIN_WIDTH = 720;
 
 
-export function StructureWorkspace({selecting=false,selectedIds=[],onSelecting,onSelection,onBulk,query="",canEdit=true,canDesign=true,refresh=0,onChanged,capability="",tab="all",today=new Date().toISOString().slice(0,10),onTask,onVisible,control,onQuery,onTab,statusFilter,homeFilter,layoutFilter,groupFilter,sortFilter,onContext,tabs,searchLabel,viewLink,onApplyTaskView,onTalkStructure,todayFinished}:{todayFinished?:ReactNode;onTalkStructure?:(typeName?:string)=>Promise<void>;selecting?:boolean;selectedIds?:string[];onSelecting?:(v:boolean)=>void;onSelection?:(ids:string[])=>void;onBulk?:()=>void;statusFilter?:string;homeFilter?:string;layoutFilter?:string;groupFilter?:string;sortFilter?:string;onContext?:(state:Record<string,string|number|null>)=>void;query?:string;canEdit?:boolean;canDesign?:boolean;refresh?:number;onChanged?:()=>void;capability?:string;tab?:string;today?:string;onTask?:(id:string)=>void;onQuery?:(value:string)=>void;onTab?:(value:"today"|"inbox"|"week"|"all")=>void;onVisible?:(ids:string[])=>void;control?:Control;
+export function StructureWorkspace({selecting=false,selectedIds=[],onSelecting,onSelection,onBulk,query="",canEdit=true,canDesign=true,refresh=0,onChanged,capability="",tab="all",today=new Date().toISOString().slice(0,10),onTask,onVisible,control,onQuery,onTab,statusFilter,homeFilter,layoutFilter,groupFilter,sortFilter,onContext,tabs,searchLabel,viewLink,onApplyTaskView,onTalkStructure,todayFinished,listFinish}:{todayFinished?:ReactNode;
+  /** The app's finish toast and confirmation: a status change that finished a quick list offers Undo, and finishing one
+   * with unchecked items asks first. */ listFinish?:Pick<ListFinish,"result"|"refused">;onTalkStructure?:(typeName?:string)=>Promise<void>;selecting?:boolean;selectedIds?:string[];onSelecting?:(v:boolean)=>void;onSelection?:(ids:string[])=>void;onBulk?:()=>void;statusFilter?:string;homeFilter?:string;layoutFilter?:string;groupFilter?:string;sortFilter?:string;onContext?:(state:Record<string,string|number|null>)=>void;query?:string;canEdit?:boolean;canDesign?:boolean;refresh?:number;onChanged?:()=>void;capability?:string;tab?:string;today?:string;onTask?:(id:string)=>void;onQuery?:(value:string)=>void;onTab?:(value:"today"|"inbox"|"week"|"all")=>void;onVisible?:(ids:string[])=>void;control?:Control;
   /** Leading toolbar content, such as the task tabs. */ tabs?:ReactNode; searchLabel?:string;
   /** Returns a shareable link for the current view. */ viewLink?:()=>string;
   /** Applies a saved task view that was not saved from a collection. */ onApplyTaskView?:(state:Record<string,unknown>)=>void}){
@@ -104,9 +107,10 @@ export function StructureWorkspace({selecting=false,selectedIds=[],onSelecting,o
   // A search covers every task, not only the open tab (Today hid an undated match). Status and
   // the tab still narrow a home filter; the notice below offers the rows they hide.
   const searching=!!query.trim();
+  const openLists=openQuickLists(items);
   const matches=(r:CustomRecord,scoped:boolean)=>{
     if(!schema)return false;
-    if(r.quick_list_parent_id&&!query&&!resultIds)return false;
+    if(!quickItemShown(r,openLists,!!capability&&tab==="today",!!query||!!resultIds))return false;
     if(resultIds&&!resultIds.includes(r.id))return false;
     if(capability&&!r.capabilities.includes(capability))return false;
     if(typeId&&r.type_id!==typeId)return false;
@@ -156,11 +160,16 @@ export function StructureWorkspace({selecting=false,selectedIds=[],onSelecting,o
   const refreshAll=async()=>{await load();setBrowseRefresh(r=>r+1);onChanged?.();};
   const edit=async(row:CustomRecord,changes:Record<string,unknown>)=>{
     const rt=schema.types.find(t=>t.id===row.type_id);
-    if(changes.status_id&&rt?.statuses.find(s=>s.id===changes.status_id)?.meaning==="completed"){
+    // A quick list's unchecked items don't stay open: the server refuses and the app asks to finish them with it.
+    if(changes.status_id&&!row.is_quick_list&&rt?.statuses.find(s=>s.id===changes.status_id)?.meaning==="completed"){
       const fresh=await api<CustomRecord>("/structure/records/"+row.id);
       if(fresh.contents?.work_open&&!window.confirm("Complete only "+row.title+"? "+fresh.contents.work_open+" unfinished descendants will stay open."))return;
     }
-    await run("record.update",{record_id:row.id,expected_revision:row.revision,schema_revision:schema.revision,...changes});await refreshAll();};
+    let saved:unknown;
+    try{saved=await run("record.update",{record_id:row.id,expected_revision:row.revision,schema_revision:schema.revision,...changes});}
+    catch(e){if(listFinish?.refused(e)){setError("");return;}throw e;}
+    listFinish?.result("record.update",saved);
+    await refreshAll();};
   const create=async()=>{if(!title.trim()||!captureType)return;const made=await run<CustomRecord>("record.create",{type_id:captureType.id,title:title.trim(),schema_revision:schema.revision,...(parent?{parent_id:parent}:{})});setTitle("");await refreshAll();describeNew(made);};
   // A new client or project opens straight away, so its description (which the card asks for) gets written now.
   const describeNew=(made:CustomRecord|undefined)=>{if(made?.id&&OVERVIEW_TYPES.includes(made.type_id))open(made);};

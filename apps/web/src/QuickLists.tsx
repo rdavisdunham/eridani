@@ -20,7 +20,9 @@ export function pinList(id:string,pinned:boolean){
 }
 
 /** A list that just finished, with the command that brings it back: the item checked last, or every item finished with it. */
-export type FinishedList={id:string;title:string;undo:()=>Promise<unknown>};
+export type FinishedList={id:string;title:string;undo:()=>Promise<unknown>;
+ /** What finished it (its box) held focus and is leaving, so the toast's Undo takes focus. */
+ focus?:boolean};
 type Command=[tool:string,args:Record<string,unknown>];
 type Result=Record<string,unknown>;
 type Write={

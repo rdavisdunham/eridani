@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { CircleCheck, Ellipsis, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
 import { ApiError } from "./api";
 import { doLabel } from "./date-picks";
+import { heldFocus } from "./list-finish";
 import { QuickListBody, isOpenItem, parseChecklist, useQuickList, type FinishedList } from "./QuickLists";
 import { useStructureActions } from "./structure-actions";
 import type { QuickList, TodayBoxData } from "./types";
@@ -30,9 +31,10 @@ export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChan
   /** A list just started here: bring the box into view with its add field focused. */
   focusAdd?: boolean;
 }) {
-  const quick = useQuickList(box.target_id, { snapshot: box.list, remember: true, onFinished });
-  const list = quick.list ?? box.list;
   const heading = useId(), panel = useRef<HTMLElement>(null), field = useRef<HTMLInputElement | null>(null);
+  // A finished list's box leaves Today; when it held focus, the toast's Undo takes it.
+  const quick = useQuickList(box.target_id, { snapshot: box.list, remember: true, onFinished: finished => onFinished({ ...finished, focus: heldFocus(panel.current) }) });
+  const list = quick.list ?? box.list;
   const [confirm, setConfirm] = useState<number | null>(null), [pinning, setPinning] = useState(false);
   const open = list.items.filter(isOpenItem).length;
   useEffect(() => {

@@ -45,3 +45,17 @@ export function inTab(r:Pick<CustomRecord,"parent_id">,tab:TaskTabScope,dates:st
   if(tab==="today"||tab==="week"){const until=tab==="today"?today:weekEnd;return dates.filter(Boolean).some(d=>d<=until);}
   return true;
 }
+
+/** The task IDs of the quick lists among these rows that are still open: not finished and not archived. */
+export function openQuickLists(rows:Pick<CustomRecord,"is_quick_list"|"task_id"|"archived"|"status_meaning">[]){
+  return new Set(rows.filter(r=>r.is_quick_list&&r.task_id&&!r.archived&&!["completed","cancelled"].includes(r.status_meaning??"")).map(r=>r.task_id!));
+}
+
+/**
+ * A quick list's items stay inside their list on the Tasks page. A search finds them, and the Today tab lists one
+ * while its list is open, as Today's "Due and overdue" does; the tab's date rule then keeps only items whose own
+ * due or do date has come.
+ */
+export function quickItemShown(r:Pick<CustomRecord,"quick_list_parent_id">,openLists:Set<string>,todayTab:boolean,searching:boolean){
+  return !r.quick_list_parent_id||searching||(todayTab&&openLists.has(r.quick_list_parent_id));
+}

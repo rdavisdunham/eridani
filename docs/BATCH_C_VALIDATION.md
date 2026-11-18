@@ -7,9 +7,32 @@ not deployment, model-quality acceptance or a real-device test.
 ## What changed
 
 - Quick lists reuse Task rows: one parent list, stable child Task IDs, optional
-  sections, a deadline and Today pin. Ordinary Tasks/Today views show the parent;
-  search can still find children. Completion, add/edit and reorder are inline.
-  Alerts default off; a missed deadline never discards work.
+  sections and a deadline. Ordinary Tasks/Today views show the parent; search can
+  still find children. Due and overdue, and the Tasks Today tab its "See all"
+  opens, also list an item with its own due or do date while its list is open.
+  Completion, add/edit and reorder are inline. Alerts default off; a missed
+  deadline never discards work.
+- Today shows each pinned list as a box after Due and overdue: its open items, an
+  add field, and the checked items folded into "N done". "Start a list" on Today
+  makes a list that is pinned at once. A new list is pinned unless it gets a date;
+  a dated list shows as a box from that date until it is finished, pinned or not.
+  A list with a box is not also an Inbox row. If it has its own date it still
+  shows in Due and overdue, which keeps listing every open task due or planned by
+  today.
+- Pins belong to the person: pinning changes only your own Today, and viewers in a
+  shared workspace can pin but not edit. A pin lasts until it is removed, is never
+  shown as overdue, and pinning or unpinning never changes the list or its items.
+  "Pin to Today" in the list and in the box menu no longer sets a do date. Lists
+  pinned the old way became pins for the workspace owner once, with the date
+  cleared.
+- Checking the last open item finishes the list, wherever it is checked, and its
+  box leaves Today while keeping the pin. When a box or a task row finishes it, a
+  toast says "Groceries is done." with Undo for six seconds, longer while Undo has
+  focus, and it stays when you change pages. Undo unchecks that item; adding or
+  unchecking an item reopens a finished list, so its box comes back. Finishing a
+  list that still has unchecked items asks first ("2 items aren't checked. Finish
+  the whole list?"), then completes the list and those items together, and Undo
+  reopens all of them. Dani asks you the same question before doing it.
 - A list holds up to 100 items. Removed items and checked items that were already
   archived don't count, so a long-running list such as groceries keeps accepting
   new items. Reorder takes exactly the items that count; archived ones keep their
@@ -61,10 +84,14 @@ invalidation, timezone validation, current profile preferences, explicit versus
 learned routing, edited-rule history/memory separation, shared roles and bot scopes.
 
 The new browser fixture uses the real local API with synthetic authentication:
-Houston capture → complete Hayes item → add/reorder → backend edit while open →
-close/reopen → one summary → promotion with original IDs. It also exercises setup
-answers, preview-before-apply, confirmation, persisted completion and 390/892px
-layouts. Existing browser fixtures cover navigation, chat, notes, semantic search,
+start the Houston list on Today (its box appears, with no dialog and no Inbox row)
+→ check off every item of a second list (its box leaves; Undo brings it back) → a
+pin changed outside the page shows or hides a box without a reload → finish a dated
+list from its Due row (asked first; Cancel changes nothing; Undo reopens the list
+and its items) → open the full Houston list → complete Hayes item → add/reorder →
+backend edit while open → close/reopen → one summary → promotion with original IDs.
+It also exercises setup answers, preview-before-apply, confirmation, persisted
+completion and 390/892px layouts. Existing browser fixtures cover navigation, chat, notes, semantic search,
 usage, Batch B source UI and custom planner workflows. Screenshots are local
 artifacts; they do not substitute for physical Pixel Fold acceptance.
 

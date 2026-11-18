@@ -4,7 +4,6 @@ import { api } from "./api";
 import type { CalendarEntry, QuickList, Schedule, Task, TodayBoxData } from "./types";
 import type { NoteRecord } from "./Notes";
 import { notePreview } from "./note-preview";
-import { scheduledBy } from "./productivity";
 import { clockLabel, dueBucket, shortDate } from "./work-views";
 import { doLabel } from "./date-picks";
 import { shiftDate } from "./workspace";
@@ -16,7 +15,7 @@ import { FinishedToday } from "./FinishedToday";
 import type { FinishedList } from "./QuickLists";
 import { TodayBoxes } from "./TodayBox";
 import { activeTodayEntry } from "./task-finished";
-import { doneToday as countDoneToday, dueCounts, dueParts } from "./today-counts";
+import { doneToday as countDoneToday, dueCounts, dueParts, dueTasks, inboxTasks } from "./today-counts";
 
 type Props = {
   tasks: Task[];
@@ -45,7 +44,6 @@ type Props = {
   onListFinished: (finished: FinishedList) => void;
 };
 
-const isOpen = (t: Task) => !t.archived && !t.quick_list_parent_id && !t.is_template && !["completed", "cancelled"].includes(t.status);
 const eventKinds = new Set(["event", "google", "block"]);
 
 function localParts(zone: string, date = new Date()) {
@@ -132,12 +130,8 @@ export function Today(p: Props) {
   }, [p.noteRevision]);
 
   // ---- Derived lists -------------------------------------------------------------------
-  const due = p.tasks.filter(t => isOpen(t) && scheduledBy(t, p.today)).sort((a, b) =>
-    (a.due_date ?? a.planned_date ?? "9999").localeCompare(b.due_date ?? b.planned_date ?? "9999") ||
-    (a.due_time ?? "99:99").localeCompare(b.due_time ?? "99:99") || b.priority - a.priority || a.title.localeCompare(b.title));
-  const dueIds = new Set(due.map(t => t.id));
-  const inbox = p.tasks.filter(t => isOpen(t) && !dueIds.has(t.id) && !t.project_id && !t.space_id && !t.area_id)
-    .sort((a, b) => b.priority - a.priority || b.created_at.localeCompare(a.created_at));
+  const due = dueTasks(p.tasks, p.today);
+  const inbox = inboxTasks(p.tasks, due, new Set((p.boxes ?? []).map(box => box.target_id)));
   const doneToday = countDoneToday(p.finishedTasks ?? p.tasks, p.today, p.zone);
   // One count source for the header and the "Due and overdue" card: its parts add up to the card's count.
   const dueSplit = dueParts(dueCounts(due, p.today));

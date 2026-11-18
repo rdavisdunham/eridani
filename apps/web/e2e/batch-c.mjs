@@ -16,7 +16,31 @@ async function request(path,body){return page.evaluate(async({path,body})=>{cons
 const ui=async(name,args)=>{const r=await request("/__test_ui",{name,arguments:args});if(r.status!=="displayed")throw Error(JSON.stringify(r));return r;};
 try{
  await page.goto(base);await page.getByLabel("Pairing code").fill("planner-fixture");await page.locator(".login-card button.primary").click();await expect(page.getByRole("region",{name:"Today",exact:true})).toBeVisible();
- await page.getByRole("button",{name:"+ Quick list",exact:true}).click();await page.getByLabel("List title",{exact:true}).fill("Houston packing acceptance");await page.getByLabel("Checklist",{exact:true}).fill("# Hayes\nPack Hayes food\n# Personal\nPack clothes\n# Moped\nGather tools\n# Work\nPack laptop");await page.getByLabel("Pin to Today").check();await page.getByRole("button",{name:"Create list",exact:true}).click();
+ const zone=(await request("/bootstrap")).preferences.timezone;const today=new Intl.DateTimeFormat("en-CA",{timeZone:zone}).format(new Date());
+ const startList=async(title,items)=>{await page.getByRole("button",{name:"Start a list",exact:true}).click();await page.getByLabel("List title",{exact:true}).fill(title);await page.getByLabel("Items",{exact:true}).fill(items);await page.getByRole("button",{name:"Start list",exact:true}).click();const box=page.getByRole("region",{name:title,exact:true});await expect(box).toBeVisible();await expect(page.getByLabel("Add to "+title,{exact:true})).toBeFocused();return box;};
+ // A list started on Today is a pinned box at once, opens no dialog, and is not also an Inbox row.
+ const houston=await startList("Houston packing acceptance","# Hayes\nPack Hayes food\n# Personal\nPack clothes\n# Moped\nGather tools\n# Work\nPack laptop");
+ await expect(houston.getByRole("button",{name:/^Check off /})).toHaveCount(4);await expect(page.getByRole("dialog")).toHaveCount(0);await expect(page.getByLabel("Complete Houston packing acceptance",{exact:true})).toHaveCount(0);
+ // Checking every item finishes the list: its box leaves, Undo takes focus, and Undo brings the box back with that item open.
+ const errands=await startList("Errands acceptance","Buy stamps\nReturn library book");
+ await errands.getByRole("button",{name:"Check off Buy stamps",exact:true}).click();await errands.getByRole("button",{name:"Check off Return library book",exact:true}).click();
+ await expect(errands).toHaveCount(0);const undo=page.locator(".toast").filter({hasText:"Errands acceptance is done."}).getByRole("button",{name:"Undo",exact:true});await expect(undo).toBeFocused();await undo.click();
+ await expect(errands.getByRole("button",{name:"Check off Return library book",exact:true})).toBeVisible();await expect(errands.locator("summary")).toHaveText("1 done");
+ // A pin changed outside this page (Dani, another device) shows without a reload.
+ const errandsList=(await request("/quick-lists?query=Errands acceptance")).items[0];
+ await request("/today/pins",{command_id:crypto.randomUUID(),target_id:errandsList.id,pinned:false});await expect(errands).toHaveCount(0);
+ await request("/today/pins",{command_id:crypto.randomUUID(),target_id:errandsList.id,pinned:true});await expect(errands).toBeVisible();
+ // Finishing a dated list from its Due row asks first. Cancel changes nothing; Finish list completes it and both items; Undo reopens all three.
+ const trip=(await request("/commands",{command_id:crypto.randomUUID(),tool:"quicklist.create",arguments:{title:"Trip acceptance",items:[{title:"Pack passport"},{title:"Book the shuttle"}],due_date:today}})).data;
+ const states=async()=>{const list=await request("/quick-lists/"+trip.id);return [list.status,...list.items.map(i=>i.status)].join();};
+ const due=page.getByRole("region",{name:"Due and overdue",exact:true});await due.getByRole("button",{name:"Complete Trip acceptance",exact:true}).click();
+ const ask=page.getByRole("dialog",{name:"Finish the whole list?",exact:true});await expect(ask).toContainText("2 items aren't checked. Finish the whole list?");
+ await ask.getByRole("button",{name:"Cancel",exact:true}).click();await expect(ask).toHaveCount(0);expect(await states()).toBe("open,open,open");
+ await due.getByRole("button",{name:"Complete Trip acceptance",exact:true}).click();await ask.getByRole("button",{name:"Finish list",exact:true}).click();
+ const tripUndo=page.locator(".toast").filter({hasText:"Trip acceptance is done."}).getByRole("button",{name:"Undo",exact:true});await expect(tripUndo).toBeVisible();expect(await states()).toBe("completed,completed,completed");
+ await tripUndo.click();await expect.poll(states).toBe("open,open,open");
+ // The whole list opens from its box.
+ await page.getByRole("button",{name:"Options for Houston packing acceptance",exact:true}).click();await page.getByRole("button",{name:"Open full list",exact:true}).click();
  await expect(page.getByRole("dialog",{name:"Quick list",exact:true})).toBeVisible();
  await page.getByLabel("Complete Pack Hayes food",{exact:true}).click();await expect(page.getByRole("status").filter({hasText:"1 of 4 done"})).toBeVisible();
  await page.getByLabel("New checklist item",{exact:true}).fill("Pack charger");await page.getByRole("dialog",{name:"Quick list",exact:true}).getByRole("button",{name:"Add",exact:true}).click();await expect(page.getByRole("status").filter({hasText:"1 of 5 done"})).toBeVisible();
@@ -63,5 +87,5 @@ try{
  expect((await request("/setup")).conversation_id).toBe(session.conversation_id);
  expect(setupRequests.length).toBe(1);
  await page.getByRole("button",{name:"Close Dani",exact:true}).click();
- if(errors.length)throw Error(errors.join("\n"));console.log("Batch C browser passed: compact capture, completion/reorder/reopen/promotion, setup preview/confirmation/resume, guided launch/dirty save/unknown-response retry and phone/fold layout.");
+ if(errors.length)throw Error(errors.join("\n"));console.log("Batch C browser passed: lists started on Today as boxes, finish and Undo, pins from elsewhere, finishing a dated list from Due, completion/reorder/reopen/promotion, setup preview/confirmation/resume, guided launch/dirty save/unknown-response retry and phone/fold layout.");
 }finally{await browser.close();}

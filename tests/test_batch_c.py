@@ -1,13 +1,14 @@
 """Batch C acceptance: capture identity, setup confirmation and explicit-rule authority."""
+from datetime import timedelta
 from uuid import uuid4
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from cryptography.fernet import Fernet
 from jarvis.db import session_scope
-from jarvis.domain import DomainError, execute
+from jarvis.domain import DomainError, deliver_occurrence, execute, scan_schedules
 from jarvis.config import get_settings
-from jarvis.models import Task, Note, Schedule, ActionChange, OwnerSettings, Memory
-from jarvis.structure_models import FieldUnderstanding, RoutingPattern
+from jarvis.models import Task, Note, Schedule, ActionChange, OwnerSettings, Memory, Job, Notification, now
+from jarvis.structure_models import FieldUnderstanding, RoutingPattern, StructureRecord
 from jarvis import quick_lists, onboarding, structure, routing
 from test_structure import run, create, definition, apply
 
@@ -93,6 +94,195 @@ def test_past_deadline_is_retained_with_opt_in_alert():
 def test_capture_limit_rejects_whole_transaction():
     with pytest.raises(DomainError):capture(items=[{"title":"x"}]*101)
     with session_scope() as db:assert not list(db.scalars(select(Task)))
+
+def checklist(*titles):
+    return run("quicklist.create",{"title":"Groceries","items":[{"title":t} for t in titles]})
+
+def item_change(row,operation,key=None,**args):
+    return run("quicklist.item",{"list_id":row["id"],"expected_revision":row["revision"],"operation":operation,**args},key=key)
+
+def check(row,item,completed=True):
+    return item_change(row,"edit",item_id=item["id"],expected_item_revision=item["revision"],completed=completed)
+
+def status(identity):
+    with session_scope() as db:return db.get(Task,identity).status
+
+def record_revision(identity):
+    with session_scope() as db:return db.get(StructureRecord,identity).revision
+
+def reminder_notice(task_id):
+    run("schedule.create",{"title":"Buy it","when":(now()-timedelta(minutes=1)).replace(microsecond=0).isoformat(),"timezone":"America/Chicago","task_id":task_id})
+    with session_scope() as db:
+        scan_schedules(db)
+        for job in db.scalars(select(Job).where(Job.kind=="reminder")):deliver_occurrence(db,job)
+        db.flush()
+        return db.scalar(select(Notification).where(Notification.task_id==task_id)).id
+
+def deadline_notice(task_id):
+    with session_scope() as db:
+        notice=Notification(owner_id="davin",dedup_key="deadline:"+task_id,category="deadline",title="Due",body="",task_id=task_id,scheduled_at=now(),eligible_at=now())
+        db.add(notice);db.flush()
+        return notice.id
+
+def test_last_check_finishes_the_list_and_its_receipt_undoes_it():
+    row=checklist("Milk","Eggs")
+    row=check(row,row["items"][0])
+    assert row["status"]=="open" and "list_finished" not in row
+    eggs=row["items"][1]
+    args={"list_id":row["id"],"expected_revision":row["revision"],"operation":"edit","item_id":eggs["id"],"expected_item_revision":eggs["revision"],"completed":True}
+    finished=run("quicklist.item",args,key="last-check")
+    assert finished["list_finished"] is True and finished["status"]=="completed"
+    # A replay returns the same receipt and finishes nothing twice.
+    assert run("quicklist.item",args,key="last-check")==finished
+    assert read(row["id"])["revision"]==finished["revision"]
+    # Undo uses only what the receipt returned: the list revision and the item revision.
+    eggs=next(i for i in finished["items"] if i["id"]==eggs["id"])
+    reopened=check(finished,eggs,completed=False)
+    assert reopened["list_reopened"] is True and reopened["status"]=="open"
+    assert [i["status"] for i in reopened["items"]]==["completed","open"]
+
+@pytest.mark.parametrize("path",["task.complete","task.update","notification.complete"])
+def test_last_item_finishes_the_list_from_task_paths(path):
+    row=checklist("Milk","Eggs")
+    row=check(row,row["items"][0])
+    eggs=row["items"][1]
+    if path=="notification.complete":
+        result=run(path,{"notification_id":reminder_notice(eggs["id"])})
+    else:
+        args={"task_id":eggs["id"],"expected_revision":eggs["revision"]}
+        result=run(path,{**args,"status":"completed"} if path=="task.update" else args)
+    current=read(row["id"])
+    assert current["status"]=="completed" and result["list_finished"] is True
+    assert (result["list_id"],result["list_revision"])==(row["id"],current["revision"])
+
+def test_finishing_a_list_with_open_items_needs_consent_and_undo_reopens_them():
+    row=checklist("Milk","Eggs","Bread")
+    row=check(row,row["items"][0])
+    with pytest.raises(DomainError) as refused:
+        run("task.complete",{"task_id":row["id"],"expected_revision":row["revision"]})
+    assert refused.value.code=="LIST_HAS_OPEN_ITEMS" and "2 items" in refused.value.message
+    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2}
+    unchanged=read(row["id"])
+    assert unchanged["revision"]==row["revision"] and [i["status"] for i in unchanged["items"]]==["completed","open","open"]
+    done=run("task.complete",{"task_id":row["id"],"expected_revision":row["revision"],"complete_open_items":True})
+    assert done["status"]=="completed"
+    assert sorted(done["completed_item_ids"])==sorted(i["id"] for i in row["items"][1:])
+    assert {i["status"] for i in read(row["id"])["items"]}=={"completed"}
+    undone=run("task.reopen",{"task_id":row["id"],"expected_revision":done["revision"],"item_ids":done["completed_item_ids"]})
+    assert undone["status"]=="open" and sorted(undone["reopened_item_ids"])==sorted(done["completed_item_ids"])
+    assert [i["status"] for i in read(row["id"])["items"]]==["completed","open","open"]
+
+def test_reopening_a_finished_list_alone_keeps_its_items_checked():
+    row=checklist("Milk")
+    finished=check(row,row["items"][0])
+    assert finished["status"]=="completed"
+    reopened=run("task.reopen",{"task_id":row["id"],"expected_revision":finished["revision"]})
+    assert reopened["status"]=="open" and "list_finished" not in reopened
+    assert [i["status"] for i in read(row["id"])["items"]]==["completed"]
+
+@pytest.mark.parametrize("path",["task.update","task.batch","record.update","notification.complete"])
+def test_other_ways_of_finishing_a_list_with_open_items_are_refused(path):
+    row=checklist("Milk","Eggs")
+    if path=="task.update":
+        args={"task_id":row["id"],"expected_revision":row["revision"],"status":"completed"}
+    elif path=="task.batch":
+        args={"items":[{"task_id":row["id"],"expected_revision":row["revision"],"status":"completed"}]}
+    elif path=="record.update":
+        # The Tasks screen changes the list's status through its record.
+        args={"record_id":row["id"],"expected_revision":record_revision(row["id"]),"schema_revision":definition()["revision"],"status_id":"completed"}
+    else:
+        args={"notification_id":deadline_notice(row["id"])}
+    with pytest.raises(DomainError) as refused:run(path,args)
+    assert refused.value.code=="LIST_HAS_OPEN_ITEMS"
+    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2}
+    current=read(row["id"])
+    assert current["status"]=="open" and current["revision"]==row["revision"]
+
+def test_a_batch_with_consent_finishes_the_list_and_its_items():
+    row=checklist("Milk","Eggs")
+    result=run("task.batch",{"items":[{"task_id":row["id"],"expected_revision":row["revision"],"status":"completed","complete_open_items":True}]})
+    assert result["applied_ids"]==[row["id"]] and status(row["id"])=="completed"
+    assert {i["status"] for i in read(row["id"])["items"]}=={"completed"}
+
+@pytest.mark.parametrize("path",["task.update","record.update"])
+def test_moving_the_last_open_item_out_finishes_the_list(path):
+    row=checklist("Milk","Eggs")
+    row=check(row,row["items"][0])
+    eggs=row["items"][1]
+    if path=="task.update":
+        errands=run("task.create",{"title":"Errands"})
+        moved=run(path,{"task_id":eggs["id"],"expected_revision":eggs["revision"],"parent_task_id":errands["id"]})
+    else:
+        # Organize moves the item's record to another home.
+        errands=create("project","Errands")
+        moved=run(path,{"record_id":eggs["id"],"expected_revision":record_revision(eggs["id"]),"schema_revision":definition()["revision"],"parent_id":errands["id"]})
+    current=read(row["id"])
+    assert moved["list_finished"] is True and current["status"]=="completed"
+    assert [i["id"] for i in current["items"]]==[row["items"][0]["id"]]
+
+def test_remove_cancels_an_item_and_drops_it_from_every_count():
+    row=checklist("Milk","Eggs","Bread")
+    row=check(row,row["items"][0])
+    milk=row["items"][0]
+    removed=item_change(row,"remove",item_id=milk["id"],expected_item_revision=milk["revision"])
+    assert status(milk["id"])=="cancelled" and removed["status"]=="open"
+    assert (removed["total"],removed["done"])==(2,0)
+    assert (removed["quick_total"],removed["quick_done"])==(2,0)
+    with session_scope() as db:
+        listed=next(r for r in structure.records(db,"davin",limit=200)["items"] if r["id"]==row["id"])
+    assert (listed["quick_total"],listed["quick_done"])==(2,0)  # The Tasks chip "Quick list · done/total".
+
+def test_removing_items_finishes_a_checked_list_and_leaves_an_emptied_one_open():
+    row=checklist("Milk","Eggs")
+    row=check(row,row["items"][0])
+    eggs=row["items"][1]
+    finished=item_change(row,"remove",item_id=eggs["id"],expected_item_revision=eggs["revision"])
+    assert finished["list_finished"] is True and finished["status"]=="completed"
+    lone=checklist("Typo")
+    typo=lone["items"][0]
+    emptied=item_change(lone,"remove",item_id=typo["id"],expected_item_revision=typo["revision"])
+    assert emptied["status"]=="open" and (emptied["total"],emptied["done"])==(0,0) and "list_finished" not in emptied
+
+def test_a_cancelled_list_is_never_finished_or_reopened():
+    row=checklist("Milk")
+    cancelled=run("task.update",{"task_id":row["id"],"expected_revision":row["revision"],"status":"cancelled"})
+    checked=check(cancelled,row["items"][0])
+    assert checked["status"]=="cancelled" and "list_finished" not in checked
+    unchecked=check(checked,checked["items"][0],completed=False)
+    assert unchecked["status"]=="cancelled" and "list_reopened" not in unchecked
+
+def test_adds_to_a_finished_list_reopen_it_using_each_receipt():
+    row=checklist("Milk")
+    finished=check(row,row["items"][0])
+    first=item_change(finished,"add",title="Eggs")
+    assert first["list_reopened"] is True and first["status"]=="open"
+    second=item_change(first,"add",title="Bread")
+    assert "list_reopened" not in second and [i["title"] for i in second["items"]]==["Milk","Eggs","Bread"]
+
+def test_rescheduling_a_checked_items_reminder_reopens_the_finished_list():
+    row=checklist("Milk")
+    milk=row["items"][0]
+    alert=run("schedule.create",{"title":"Buy milk","when":"2030-01-02T09:00:00","timezone":"America/Chicago","task_id":milk["id"]})
+    assert check(row,milk)["status"]=="completed"
+    with session_scope() as db:revision=db.get(Schedule,alert["id"]).revision
+    result=run("schedule.reschedule",{"schedule_id":alert["id"],"expected_revision":revision,"when":"2030-01-03T09:00:00"})
+    current=read(row["id"])
+    assert result["list_reopened"] is True and current["status"]=="open"
+    assert current["items"][0]["status"]=="open"
+
+def test_cap_and_reorder_count_open_and_unarchived_checked_items():
+    row=checklist(*[f"Item {i}" for i in range(100)])
+    with pytest.raises(DomainError) as full:item_change(row,"add",title="One more")
+    assert full.value.code=="LIST_FULL"
+    filed=[i["id"] for i in row["items"][:97]]
+    with session_scope() as db:
+        # The automatic archive files checked items after a day; they stay in the list's history.
+        db.execute(text("UPDATE tasks SET status='completed', completed_at=now(), archived=true, archive_reason='automatic', archived_at=now() WHERE id = ANY(:ids)"),{"ids":filed})
+    added=item_change(row,"add",title="One more")
+    unarchived=[i["id"] for i in added["items"] if not i["archived"]]
+    assert len(unarchived)==4
+    moved=item_change(added,"reorder",order=unarchived[::-1])
+    assert [i["id"] for i in moved["items"]]==[*unarchived[::-1],*filed]
 
 def test_setup_is_account_scoped_skip_resume_and_stale_protected():
     row=run("onboarding.save",{"expected_revision":0,"preferred_name":"Morgan","timezone":"America/Chicago","purpose":"Work and home","status":"skipped"})

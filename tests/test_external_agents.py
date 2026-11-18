@@ -99,6 +99,21 @@ def test_commands_retry_and_revision_conflict_and_actor_activity(client):
         )  # Direct operations use no model/queue.
 
 
+def test_bot_completing_the_last_quick_list_item_finishes_the_list(client):
+    _, headers = key(client)
+    created = call(headers, "quicklist.create", {"title": "Groceries", "items": [{"title": "Milk"}]})
+    assert created.status_code == 200, created.text
+    checklist = created.json()["data"]
+    item = checklist["items"][0]
+    done = call(headers, "task.complete", {"task_id": item["id"], "expected_revision": item["revision"]})
+    assert done.status_code == 200, done.text
+    receipt = done.json()["data"]
+    assert receipt["list_finished"] is True and receipt["list_id"] == checklist["id"]
+    with session_scope() as db:
+        assert db.get(Task, checklist["id"]).status == "completed"
+        assert receipt["list_revision"] == db.get(Task, checklist["id"]).revision
+
+
 def test_parallel_retries_create_once_and_competing_edits_conflict(client):
     _, headers = key(client)
     operation = str(uuid4())

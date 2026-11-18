@@ -10,6 +10,10 @@ not deployment, model-quality acceptance or a real-device test.
   sections, a deadline and Today pin. Ordinary Tasks/Today views show the parent;
   search can still find children. Completion, add/edit and reorder are inline.
   Alerts default off; a missed deadline never discards work.
+- A list holds up to 100 items. Removed items and checked items that were already
+  archived don't count, so a long-running list such as groceries keeps accepting
+  new items. Reorder takes exactly the items that count; archived ones keep their
+  saved order after them.
 - Promotion turns that same parent and its children into ordinary tasks/subtasks,
   optionally assigned to an existing project. It does not clone work or create a
   second project engine. Create a new project through the existing project tools.

@@ -506,7 +506,8 @@ class Prefetch:
                 .group_by(Task.parent_task_id, Task.status)
             ):
                 total, done = self.quick.get(parent, (0, 0))
-                self.quick[parent] = (total + n, done + (n if status == "completed" else 0))
+                # A removed (cancelled) item counts as neither open nor done.
+                self.quick[parent] = (total + (n if status != "cancelled" else 0), done + (n if status == "completed" else 0))
         note_ids = {r.note_id for r in rows if r.note_id}
         self.notes = (
             {n.id: n for n in db.scalars(select(Note).where(Note.owner_id == owner, Note.id.in_(note_ids)))}

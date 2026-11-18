@@ -17,6 +17,9 @@ def project_parent(db, row):
     parent = db.get(StructureRecord, row.parent_id) if row.parent_id else None
     target = parent.task_id if parent and parent.owner_id == row.owner_id else None
     if task.parent_task_id != target:
+        # Moving an item out of (or into) a quick list settles that list at the end of the command.
+        from .quick_lists import touch
+        touch(db, task.parent_task_id, target)
         task.parent_task_id = target
         task.revision += 1
         task.updated_at = now()

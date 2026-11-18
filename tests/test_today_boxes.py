@@ -124,14 +124,26 @@ def test_unpinning_removes_the_box_and_changes_no_task():
     groceries = create("Groceries", "Milk", "Eggs")
     before = read(groceries["id"])
     assert run("today.pin", {"target_id": groceries["id"], "pinned": True}) == {
-        "kind": "quick_list", "target_id": groceries["id"], "pinned": True}
+        "kind": "quick_list", "target_id": groceries["id"], "pinned": True, "on_today": True, "reason": "pinned"}
     receipt = run("today.pin", {"target_id": groceries["id"], "pinned": False})
-    assert receipt == {"kind": "quick_list", "target_id": groceries["id"], "pinned": False}
+    assert receipt == {"kind": "quick_list", "target_id": groceries["id"], "pinned": False, "on_today": False,
+                       "reason": None}
     assert boxes() == [] and pinned(OWNER, OWNER) == []
     after = read(groceries["id"])
     assert after["pinned"] is False and after == {**before, "pinned": False}
     run("today.pin", {"target_id": groceries["id"], "pinned": True})
     assert boxes() == [("pinned", "Groceries")] and read(groceries["id"]) == before
+
+
+def test_unpinning_a_list_whose_date_has_come_says_it_stays_on_today():
+    from jarvis.agent_link import owner_today
+    with session_scope() as db:
+        day = owner_today(db, OWNER)
+    party = create("Party", "Balloons", planned_date=day.isoformat(), pinned=True)
+    receipt = run("today.pin", {"target_id": party["id"], "pinned": False})
+    assert receipt == {"kind": "quick_list", "target_id": party["id"], "pinned": False, "on_today": True,
+                       "reason": "dated"}
+    assert boxes(day) == [("dated", "Party")]
 
 
 def test_a_finished_list_hides_its_box_and_a_reopen_brings_it_back_in_place():

@@ -366,7 +366,8 @@ def test_today_pins_are_per_member_and_a_viewer_can_pin_but_not_edit(client):
     assert guest.get("/api/v1/quick-lists/" + team["id"]).json()["pinned"] is False
     with session_scope() as db:
         db.get(WorkspaceMember, (w["id"], "guest")).role = "viewer"
-    assert pin_box(guest, team["id"]) == {"kind": "quick_list", "target_id": team["id"], "pinned": True}
+    assert pin_box(guest, team["id"]) == {"kind": "quick_list", "target_id": team["id"], "pinned": True,
+                                         "on_today": True, "reason": "pinned"}
     assert today_boxes(guest) == [(team["id"], "pinned")]
     assert [row["pinned"] for row in guest.get("/api/v1/quick-lists").json()["items"]] == [True]
     # Unpinning reaches only the person who did it, and a pin never changes the list.

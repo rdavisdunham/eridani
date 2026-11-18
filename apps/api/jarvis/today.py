@@ -46,10 +46,26 @@ def is_pinned(db, owner, account, kind, target_id):
         TodayPin.kind == kind, TodayPin.target_id == target_id)) is not None
 
 
+def reason(row, pinned, day):
+    """Why a quick list has a box on `day`: "pinned", "dated" (its due date or do date has come), or None for no box.
+    A finished, archived or promoted list has none, pinned or not."""
+    from .quick_lists import FINISHED
+
+    if not row.is_quick_list or row.archived or row.status in FINISHED:
+        return None
+    if pinned:
+        return "pinned"
+    return "dated" if any(d and d <= day for d in (row.due_date, row.planned_date)) else None
+
+
 def change_pin(db, owner, args):
     """today.pin: puts a box on, or takes it off, the Today of the person acting. The target itself never changes,
-    so its revision stays the same, and nothing goes to Activity: unpinning is the undo."""
+    so its revision stays the same, and nothing goes to Activity: unpinning is the undo.
+
+    The receipt says whether the list still shows on Today and why, so an unpinned list whose date has come
+    is not reported as gone."""
     from .access import actor
+    from .agent_link import owner_today
 
     row = owned(db, Task, args.target_id, owner)
     if not row.is_quick_list:
@@ -57,12 +73,13 @@ def change_pin(db, owner, args):
     (pin if args.pinned else unpin)(db, owner, actor(db, owner), QUICK_LIST, row.id)
     # Open screens, on this device or another, reload their boxes.
     emit(db, owner, "today.changed", row.id)
-    return {"kind": QUICK_LIST, "target_id": row.id, "pinned": args.pinned}
+    why = reason(row, args.pinned, owner_today(db, owner))
+    return {"kind": QUICK_LIST, "target_id": row.id, "pinned": args.pinned, "on_today": why is not None, "reason": why}
 
 
 def pin_receipt(data):
     """True for the data of a today.pin receipt, which Activity leaves out."""
-    return isinstance(data, dict) and data.keys() == {"kind", "target_id", "pinned"}
+    return isinstance(data, dict) and data.keys() == {"kind", "target_id", "pinned", "on_today", "reason"}
 
 
 def boxes(db, owner, account, day=None):
@@ -76,20 +93,21 @@ def boxes(db, owner, account, day=None):
 
     day = day or owner_today(db, owner)
     pinned = pinned_lists(db, owner, account)
-    showing = (Task.owner_id == owner, Task.is_quick_list.is_(True), Task.archived.is_(False),
-               Task.status.not_in(FINISHED))
-    rows = {row.id: row for row in db.scalars(select(Task).where(*showing, Task.id.in_(pinned)))}
+    # Every candidate in one read; reason() then decides each, the same rule today.pin reports.
+    rows = {row.id: row for row in db.scalars(select(Task).where(
+        Task.owner_id == owner, Task.is_quick_list.is_(True), Task.archived.is_(False), Task.status.not_in(FINISHED),
+        or_(Task.id.in_(pinned), Task.due_date <= day, Task.planned_date <= day)))}
 
-    def box(row, reason, since=None):
-        mine = reason == "pinned"
-        return {"kind": QUICK_LIST, "target_id": row.id, "reason": reason, "pinned": mine,
+    def box(row, why, since=None):
+        mine = why == "pinned"
+        return {"kind": QUICK_LIST, "target_id": row.id, "reason": why, "pinned": mine,
                 "date": since.isoformat() if since else None,
-                "list": read(db, owner, row.id, account, pinned=mine)}
+                "list": read(db, owner, row.id, account, pinned=mine, row=row)}
 
     def arrived(row):
         return min(d for d in (row.due_date, row.planned_date) if d and d <= day)
 
-    dated = db.scalars(select(Task).where(*showing, Task.id.not_in(pinned),
-                                          or_(Task.due_date <= day, Task.planned_date <= day)))
+    mine = set(pinned)
+    dated = [row for row in rows.values() if reason(row, row.id in mine, day) == "dated"]
     return [*(box(rows[identity], "pinned") for identity in pinned if identity in rows),
             *(box(row, "dated", arrived(row)) for row in sorted(dated, key=lambda r: (arrived(r), r.title, r.id)))]

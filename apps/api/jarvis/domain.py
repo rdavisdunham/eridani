@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import rrule, tz
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 
 from .config import get_settings
@@ -103,6 +103,15 @@ class VerifyConfig(Args):
 
 CONSENT = ("Only after the owner confirms finishing a quick list that still has unchecked items: "
            "completes those items with the list. Without it that change is refused with LIST_HAS_OPEN_ITEMS.")
+CONSENTED_ITEMS = ("With complete_open_items: the open item IDs the owner agreed to, from LIST_HAS_OPEN_ITEMS "
+                   "open_item_ids. If the list's open items differ, nothing changes and the refusal returns the current ones.")
+
+
+def consented_items(args):
+    """Consent names the unchecked items the owner was shown, so an item added since is never completed unasked."""
+    if args.open_item_ids is not None and not args.complete_open_items:
+        raise ValueError("Send open_item_ids only with complete_open_items=true.")
+    return args
 
 
 class TaskChanges(Args):
@@ -143,6 +152,8 @@ class TaskChanges(Args):
     # How much of the owner a run needs (readiness.py); null hands the choice back to the readiness pass.
     run_route: Literal["auto", "direction", "plan_review", "human"] | None = None
     complete_open_items: bool = Field(default=False, description=CONSENT)
+    open_item_ids: list[str] | None = Field(default=None, max_length=100, description=CONSENTED_ITEMS)
+    _consented_items = model_validator(mode="after")(consented_items)
 
 
 class TaskUpdate(TaskChanges):
@@ -166,6 +177,8 @@ class TaskState(Args):
 
 class TaskComplete(TaskState):
     complete_open_items: bool = Field(default=False, description=CONSENT)
+    open_item_ids: list[str] | None = Field(default=None, max_length=100, description=CONSENTED_ITEMS)
+    _consented_items = model_validator(mode="after")(consented_items)
 
 
 class TaskReopen(TaskState):
@@ -374,7 +387,8 @@ def encode(value):
     return jsonable_encoder(value, custom_encoder={datetime: lambda v: (v.astimezone(UTC) if v.tzinfo else v).isoformat()})
 
 
-def serial(record):
+def serial(record, *, source=None):
+    """`source`: the task's provenance when the caller already read it (quick_lists.read reads a list's at once)."""
     result = encode(
         {
             c.name: getattr(record, c.name)
@@ -388,7 +402,7 @@ def serial(record):
         from .sources import task_source
         db = object_session(record)
         if db:
-            result["source"] = task_source(db, record)
+            result["source"] = source or task_source(db, record)
             if record.is_quick_list:
                 from sqlalchemy import func
                 checklist = select(Task).where(
@@ -804,7 +818,7 @@ def mutate(db, owner, tool, args, command_id):
         tasks, applied_ids, unchanged_ids = [], [], []
         for item in args.items:
             current = owned(db, Task, item.task_id, owner)
-            changes = item.model_dump(exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items"})
+            changes = item.model_dump(exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items", "open_item_ids"})
             if all(getattr(current, key) == value for key, value in changes.items()):
                 tasks.append(serial(current))
                 unchanged_ids.append(current.id)
@@ -840,7 +854,7 @@ def mutate(db, owner, tool, args, command_id):
         check_revision(task, args.expected_revision)
         old_status, old_archived, old_parent = task.status, task.archived, task.parent_task_id
         changes = args.model_dump(
-            exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items"})
+            exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items", "open_item_ids"})
         if tool == "task.complete":
             changes = {"status": "completed"}
         elif tool == "task.reopen":
@@ -861,7 +875,7 @@ def mutate(db, owner, tool, args, command_id):
         if task.is_quick_list and changes.get("status") == "completed" and task.status != "completed":
             from .quick_lists import complete_open_items
             extra["completed_item_ids"] = complete_open_items(
-                db, owner, task, consent=args.complete_open_items, command_id=command_id)
+                db, owner, task, consent=args.complete_open_items, shown=args.open_item_ids, command_id=command_id)
         if any(key in changes for key in ("due_date", "due_time", "due_timezone")):
             changes = task_timing(db, owner, changes, task)
         changes = project_changes(db, owner, changes, task)

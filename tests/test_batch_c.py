@@ -161,7 +161,7 @@ def test_finishing_a_list_with_open_items_needs_consent_and_undo_reopens_them():
     with pytest.raises(DomainError) as refused:
         run("task.complete",{"task_id":row["id"],"expected_revision":row["revision"]})
     assert refused.value.code=="LIST_HAS_OPEN_ITEMS" and "2 items" in refused.value.message
-    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2}
+    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2,"open_item_ids":[i["id"] for i in row["items"][1:]]}
     unchanged=read(row["id"])
     assert unchanged["revision"]==row["revision"] and [i["status"] for i in unchanged["items"]]==["completed","open","open"]
     done=run("task.complete",{"task_id":row["id"],"expected_revision":row["revision"],"complete_open_items":True})
@@ -171,6 +171,34 @@ def test_finishing_a_list_with_open_items_needs_consent_and_undo_reopens_them():
     undone=run("task.reopen",{"task_id":row["id"],"expected_revision":done["revision"],"item_ids":done["completed_item_ids"]})
     assert undone["status"]=="open" and sorted(undone["reopened_item_ids"])==sorted(done["completed_item_ids"])
     assert [i["status"] for i in read(row["id"])["items"]]==["completed","open","open"]
+    # The undo reopens only this list's own items: another list's item, or item_ids on a normal task, are refused.
+    finished=run("task.complete",{"task_id":row["id"],"expected_revision":undone["revision"],"complete_open_items":True})
+    other=checklist("Soap")
+    plain=run("task.create",{"title":"Call the bank"})
+    for target,ids in ((finished,[other["items"][0]["id"]]),(plain,[row["items"][0]["id"]])):
+        with pytest.raises(DomainError) as invalid:
+            run("task.reopen",{"task_id":target["id"],"expected_revision":target["revision"],"item_ids":ids})
+        assert invalid.value.code=="INVALID_ARGUMENT"
+    assert status(row["id"])=="completed" and {i["status"] for i in read(row["id"])["items"]}=={"completed"}
+    assert status(other["items"][0]["id"])=="open" and status(plain["id"])=="open"
+
+def test_consent_covers_only_the_open_items_the_owner_was_shown():
+    row=checklist("Milk")
+    milk=row["items"][0]["id"]
+    with pytest.raises(DomainError) as asked:
+        run("task.complete",{"task_id":row["id"],"expected_revision":row["revision"]})
+    assert asked.value.data["open_item_ids"]==[milk]
+    # Eggs joins through a task path while the question is up, which leaves the list's revision as it was.
+    eggs=run("task.create",{"title":"Eggs","parent_task_id":row["id"]})["id"]
+    consent={"task_id":row["id"],"expected_revision":row["revision"],"complete_open_items":True}
+    with pytest.raises(DomainError) as refused:
+        run("task.complete",{**consent,"open_item_ids":asked.value.data["open_item_ids"]})
+    assert refused.value.code=="LIST_HAS_OPEN_ITEMS" and "2 items" in refused.value.message
+    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2,"open_item_ids":[milk,eggs]}
+    assert [status(i) for i in (row["id"],milk,eggs)]==["open","open","open"]
+    done=run("task.complete",{**consent,"open_item_ids":refused.value.data["open_item_ids"]})
+    assert done["status"]=="completed" and sorted(done["completed_item_ids"])==sorted([milk,eggs])
+    assert [status(i) for i in (milk,eggs)]==["completed","completed"]
 
 def test_reopening_a_finished_list_alone_keeps_its_items_checked():
     row=checklist("Milk")
@@ -194,7 +222,7 @@ def test_other_ways_of_finishing_a_list_with_open_items_are_refused(path):
         args={"notification_id":deadline_notice(row["id"])}
     with pytest.raises(DomainError) as refused:run(path,args)
     assert refused.value.code=="LIST_HAS_OPEN_ITEMS"
-    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2}
+    assert refused.value.data=={"task_id":row["id"],"revision":row["revision"],"open_count":2,"open_item_ids":[i["id"] for i in row["items"]]}
     current=read(row["id"])
     assert current["status"]=="open" and current["revision"]==row["revision"]
 
@@ -203,6 +231,47 @@ def test_a_batch_with_consent_finishes_the_list_and_its_items():
     result=run("task.batch",{"items":[{"task_id":row["id"],"expected_revision":row["revision"],"status":"completed","complete_open_items":True}]})
     assert result["applied_ids"]==[row["id"]] and status(row["id"])=="completed"
     assert {i["status"] for i in read(row["id"])["items"]}=={"completed"}
+
+def test_a_selection_update_finishes_a_list_only_with_consent():
+    from jarvis.task_tools import list_tasks
+    row=checklist("Milk","Eggs")
+    receipt=run("task.create",{"title":"Groceries receipt"})
+    with session_scope() as db:
+        selection=list_tasks(db,"davin",{"query":"Groceries"})["selection_id"]
+    with pytest.raises(DomainError) as refused:
+        run("task.selection_update",{"selection_id":selection,"changes":{"status":"completed"}})
+    assert refused.value.code=="LIST_HAS_OPEN_ITEMS"
+    assert [status(i) for i in (row["id"],receipt["id"],*(i["id"] for i in row["items"]))]==["open"]*4
+    # Consent reaches the list; the plain task in the same selection simply completes.
+    run("task.selection_update",{"selection_id":selection,"changes":{"status":"completed","complete_open_items":True}})
+    assert [status(i) for i in (row["id"],receipt["id"],*(i["id"] for i in row["items"]))]==["completed"]*4
+
+def test_schedule_complete_refuses_a_list_with_open_items_and_finishes_a_list_through_its_last_item():
+    row=checklist("Milk","Eggs")
+    when={"when":"2030-01-02T09:00:00","timezone":"America/Chicago"}
+    on_list=run("schedule.create",{"title":"Shop",**when,"task_id":row["id"]})
+    with session_scope() as db:revision=db.get(Schedule,on_list["id"]).revision
+    with pytest.raises(DomainError) as refused:
+        run("schedule.complete",{"schedule_id":on_list["id"],"expected_revision":revision})
+    assert refused.value.code=="LIST_HAS_OPEN_ITEMS"
+    with session_scope() as db:
+        alert=db.get(Schedule,on_list["id"])
+        assert (alert.status,alert.revision)==("active",revision)
+    assert status(row["id"])=="open"
+    row=check(row,row["items"][0])
+    eggs=run("schedule.create",{"title":"Buy eggs",**when,"task_id":row["items"][1]["id"]})
+    with session_scope() as db:revision=db.get(Schedule,eggs["id"]).revision
+    result=run("schedule.complete",{"schedule_id":eggs["id"],"expected_revision":revision})
+    assert result["list_finished"] is True and status(row["id"])=="completed"
+
+def test_archiving_the_last_open_item_finishes_the_list_and_unarchiving_reopens_it():
+    row=checklist("Milk","Eggs")
+    row=check(row,row["items"][0])
+    eggs=row["items"][1]
+    archived=run("task.update",{"task_id":eggs["id"],"expected_revision":eggs["revision"],"archived":True})
+    assert archived["list_finished"] is True and status(row["id"])=="completed"
+    restored=run("task.update",{"task_id":eggs["id"],"expected_revision":archived["revision"],"archived":False})
+    assert restored["list_reopened"] is True and status(row["id"])=="open"
 
 @pytest.mark.parametrize("path",["task.update","record.update"])
 def test_moving_the_last_open_item_out_finishes_the_list(path):
@@ -282,7 +351,19 @@ def test_cap_and_reorder_count_open_and_unarchived_checked_items():
     unarchived=[i["id"] for i in added["items"] if not i["archived"]]
     assert len(unarchived)==4
     moved=item_change(added,"reorder",order=unarchived[::-1])
-    assert [i["id"] for i in moved["items"]]==[*unarchived[::-1],*filed]
+    assert [i["id"] for i in moved["items"]][:4]==unarchived[::-1]
+
+def test_a_long_used_list_reads_its_recent_history_and_counts_all_of_it():
+    row=checklist(*[f"Item {i}" for i in range(62)])
+    ids=[i["id"] for i in row["items"]]
+    with session_scope() as db:
+        # Sixty checked items filed by the automatic archive, Item 0 the most recently checked.
+        for n,identity in enumerate(ids[:60]):
+            db.execute(text("UPDATE tasks SET status='completed', completed_at=now()-make_interval(mins=>:n), archived=true, archive_reason='automatic', archived_at=now() WHERE id=:id"),{"n":n,"id":identity})
+    current=read(row["id"])
+    # The items still on the list, then the fifty most recently finished, in their saved order.
+    assert [i["id"] for i in current["items"]]==[*ids[60:],*ids[:50]]
+    assert (current["done"],current["total"])==(current["quick_done"],current["quick_total"])==(60,62)
 
 def test_setup_is_account_scoped_skip_resume_and_stale_protected():
     row=run("onboarding.save",{"expected_revision":0,"preferred_name":"Morgan","timezone":"America/Chicago","purpose":"Work and home","status":"skipped"})

@@ -122,12 +122,13 @@ def test_bot_finishing_a_list_with_unchecked_items_needs_the_owners_yes(client):
     assert refused.status_code == 409, refused.text
     error = refused.json()["error"]
     assert error["code"] == "LIST_HAS_OPEN_ITEMS"
-    assert error["data"] == {"task_id": checklist["id"], "revision": checklist["revision"], "open_count": 2}
     items = [item["id"] for item in checklist["items"]]
+    assert error["data"] == {"task_id": checklist["id"], "revision": checklist["revision"], "open_count": 2,
+                             "open_item_ids": items}
     with session_scope() as db:
         assert [db.get(Task, identity).status for identity in (checklist["id"], *items)] == ["open"] * 3
     agreed = call(headers, "task.complete", {"task_id": checklist["id"], "expected_revision": checklist["revision"],
-                                             "complete_open_items": True})
+                                             "complete_open_items": True, "open_item_ids": error["data"]["open_item_ids"]})
     assert agreed.status_code == 200, agreed.text
     assert sorted(agreed.json()["data"]["completed_item_ids"]) == sorted(items)
 
@@ -148,7 +149,8 @@ def test_bot_keys_read_lists_and_boxes_and_pin_for_their_own_account(client):
     _, writer = key(guest)
     pinned = call(writer, "today.pin", {"target_id": team["id"], "pinned": True})
     assert pinned.status_code == 200, pinned.text
-    assert pinned.json()["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True}
+    assert pinned.json()["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True, "on_today": True,
+                                     "reason": "pinned"}
     with session_scope() as db:
         # The key holder's own Today, not the workspace's or its owner's.
         assert [(pin.account_id, pin.target_id) for pin in db.scalars(select(TodayPin))] == [("guest", team["id"])]

@@ -82,9 +82,14 @@ def test_today_list_descriptions_stay_short_and_carry_the_list_rules():
     assert "pinned=false" in tools["quicklist_create"]
     # Finishing a whole list waits for the owner's yes; "undo that" unchecks, or reopens what finishing completed.
     assert "owner's yes before complete_open_items" in tools["task_complete"]
+    assert "the refusal's open_item_ids" in tools["task_complete"]
     assert "item_ids=completed_item_ids" in tools["task_complete"]
+    # Reminder completion is refused for such a list and points to task_complete with consent.
+    for name in ("notification_complete", "schedule_complete"):
+        assert "LIST_HAS_OPEN_ITEMS" in tools[name] and "task_complete and complete_open_items" in tools[name]
     assert '"undo that" means unchecking that item (completed=false)' in tools["quicklist_item"]
     assert "take groceries off Today" in tools["today_pin"]
+    assert "stays on Today until its date changes" in tools["today_pin"]
 
 
 async def test_dani_reads_and_pins_boxes_for_the_person_asking(client, monkeypatch):
@@ -112,7 +117,8 @@ async def test_dani_reads_and_pins_boxes_for_the_person_asking(client, monkeypat
         assert (await call_tool(w["id"], row.id, 0, "today_boxes", {}))["boxes"] == []
         assert (await call_tool(w["id"], row.id, 1, "quicklist_list", {"pinned": True}))["items"] == []
         pinned = await call_tool(w["id"], row.id, 2, "today_pin", {"target_id": team["id"], "pinned": True})
-        assert pinned["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True}
+        assert pinned["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True, "on_today": True,
+                                  "reason": "pinned"}
         boxes = (await call_tool(w["id"], row.id, 3, "today_boxes", {}))["boxes"]
         assert [(box["target_id"], box["reason"]) for box in boxes] == [(team["id"], "pinned")]
         listed = await call_tool(w["id"], row.id, 4, "quicklist_list", {"pinned": True})

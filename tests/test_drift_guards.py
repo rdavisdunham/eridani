@@ -299,6 +299,30 @@ def test_external_record_kinds_and_mcp_reads_agree():
         assert name in {d["name"] for d in definitions({scope})}, (name, scope)
 
 
+def test_tools_a_description_says_to_read_first_are_callable_with_the_same_key():
+    """A bot key's tool descriptions (MCP, and queued work through Dani) must not send it to a read it cannot call:
+    MCP offered quicklist_item, whose description says to read quicklist_get first, without quicklist_get."""
+    from jarvis.bot_access import SCOPES, normalize, tool_allowed
+    from jarvis.external_mcp import definitions
+    from jarvis.tools import registry
+
+    catalog = registry()
+    keys = [normalize([scope]) for scope in sorted(SCOPES) if scope != "work:run"]  # work:run needs a read scope
+    offers = []
+    for scopes in keys:
+        offers.append((scopes, "MCP", {d["name"]: d["description"] for d in definitions(scopes)}))
+        offers.append((scopes, "queued work", {t["name"]: t["description"] for t in catalog if tool_allowed(t["name"], scopes)}))
+    names = {t["name"] for t in catalog}.union(*(offered for _, _, offered in offers))
+    checked = set()
+    for scopes, surface, offered in offers:
+        for tool, description in offered.items():
+            for clause in re.findall(r"(?i)\bread ([^.;]*?) first\b", description):
+                wanted = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", clause)) & names
+                assert wanted <= set(offered), (surface, scopes, tool, sorted(wanted - set(offered)))
+                checked |= wanted
+    assert {"quicklist_get", "structure_schema"} <= checked, "read-first parser"
+
+
 def test_run_dialog_harnesses_match_the_backend():
     """The Run dialog's agent choices (remotea-model.ts HARNESSES) are a copy of agent_control.HARNESSES: same
     harness ids, and the first model listed for each is the backend's default (startBody omits it then)."""

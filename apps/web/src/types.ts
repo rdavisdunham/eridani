@@ -55,6 +55,27 @@ export interface Task {
     finished_via?: string | null;
   };
 }
+/** A quick list as GET /quick-lists/{id} reads it: the list task, all of its items and its counts. */
+export interface QuickList extends Task {
+  /** Items still on the list first, in saved order; then archived and removed ones. */
+  items: Task[];
+  /** Checked items, archived ones included. */
+  done: number;
+  /** Items that were not removed. */
+  total: number;
+  /** Pinned to Today by the person reading it. */
+  pinned?: boolean;
+}
+/** One box on Today (GET /today/boxes): a quick list pinned by this person, or one whose date has come. */
+export interface TodayBoxData {
+  kind: "quick_list";
+  target_id: string;
+  reason: "pinned" | "dated";
+  pinned: boolean;
+  /** The due or do date that brought a dated box to Today; null for a pinned box. */
+  date: string | null;
+  list: QuickList;
+}
 export interface Project {
   space_id?: string | null;
   area_id?: string | null;

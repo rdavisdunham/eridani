@@ -12,6 +12,7 @@ import "./shell.css";
 import { NoticeSnooze } from "./NoticeSnooze";
 import { StructureWorkspace } from "./Structure";
 import {QuickCapture} from "./QuickLists";
+import { useListFinish } from "./list-finish";
 import {Onboarding} from "./Onboarding";
 import { FooterStatus, NotificationBell } from "./app-chrome";
 import { setupActive, setupEstablished, typesFieldsRequest, type OrganizationProposal, type SetupFocus, type SetupMode, type SetupSession } from "./setup-model";
@@ -148,6 +149,7 @@ import type {
   Notice,
   Schedule,
   Task,
+  TodayBoxData,
   View,
 } from "./types";
 import {
@@ -736,6 +738,9 @@ export default function App() {
     () => loader.current!.request({ immediate: true, revision: true }),
     [],
   );
+  // A quick list finished from a box, a row or the Tasks page: the toast with Undo and the confirmation for unchecked
+  // items live here, so they stay when the box leaves or the page changes.
+  const listFinish = useListFinish({ titleOf: (id) => tasks.find((t) => t.id === id)?.title, onChanged: () => load() });
   useEffect(() => {
     const zone = boot?.preferences.timezone;
     if (!zone) return;
@@ -980,7 +985,7 @@ export default function App() {
             "Saved. The workspace will refresh when the connection returns.",
           ),
         );
-        setToast(success);
+        if (!listFinish.result(tool, result.data)) setToast(success);
         retryRef.current = null;
         if (result.data && typeof result.data === "object")
           Object.defineProperty(result.data, "__command_id", {value: result.command_id, enumerable: false});
@@ -988,6 +993,8 @@ export default function App() {
       } catch (e) {
         const err = e as ApiError;
         if (err.code !== "NETWORK") pendingCommands.current.delete(key);
+        // Finishing a quick list that still has unchecked items asks first instead of failing.
+        if (listFinish.refused(err)) return undefined;
         setError(
           tool === "task.batch" && err.code === "REVISION_CONFLICT"
             ? "One of these tasks changed. Close this editor and reopen the selection to review its latest values."
@@ -2135,6 +2142,19 @@ export default function App() {
   }
   const historyOff = conversationHistoryOff || !boot?.preferences.history_enabled;
   const today = dayInZone(boot?.preferences.timezone ?? "America/Chicago");
+  // This person's quick-list boxes on Today, read again with every workspace reload (a change-feed event or a save).
+  const [boxes, setBoxes] = useState<TodayBoxData[] | null>(null);
+  const [boxesError, setBoxesError] = useState("");
+  const [boxesRead, setBoxesRead] = useState(0);
+  useEffect(() => {
+    if (!dashboard || !boot) return;
+    let live = true;
+    api<{ boxes: TodayBoxData[] }>("/today/boxes?day=" + today)
+      .then((data) => { if (live) { setBoxes(data.boxes); setBoxesError(""); } })
+      .catch((e) => { if (live) setBoxesError((e as Error).message); });
+    return () => { live = false; };
+  }, [dashboard, !!boot, today, tasks, boxesRead]);
+  const readBoxes = () => setBoxesRead((n) => n + 1);
   const endOfWeek = new Date(today + "T12:00:00");
   endOfWeek.setDate(endOfWeek.getDate() + 6);
   const weekEnd = endOfWeek.toISOString().slice(0, 10);
@@ -2817,10 +2837,12 @@ export default function App() {
             </div>}
             {!isTaskTab(view) && view !== "settings" && view !== "questions" && view !== "needs" && view !== "remotea" && view !== "meetings" && view !== "person" && view !== "notes" && view !== "organize" && view !== "calendar" && <label className="page-search"><Search size={16}/><input aria-label={searchLabel} placeholder={searchLabel + "…"} value={query} onChange={e => setQuery(e.target.value)}/></label>}
             {!boot.workspace?.id && dashboard && <Onboarding compact established={setupEstablished(organization)} onChanged={()=>void load()} onTalk={startSetup} setup={setupSession} voiceAvailable={!!boot.capabilities.voice}/>}
-            {(dashboard||isTaskTab(view))&&boot.workspace?.role!=="viewer"&&<div className="quick-capture-launch"><QuickCapture today={today} onCreated={task=>{void load();openTaskCard(task);}}/></div>}
+            {isTaskTab(view)&&!dashboard&&boot.workspace?.role!=="viewer"&&<div className="quick-capture-launch"><QuickCapture onCreated={task=>{void load();openTaskCard(task);}}/></div>}
             {dashboard && boot && <Today tasks={tasks} finishedTasks={mergeFinishedTasks(dailyFinished, tasks)} schedules={schedules} today={today} zone={boot.preferences.timezone} busy={busy} canEdit={boot.workspace?.role!=="viewer"}
               noteRevision={noteRevision} quick={quick} onQuick={setQuick} onAdd={add} onTask={openTaskCard} onToggle={task => void toggle(task)}
               onEntry={openCalendarEntry} onNote={id => void openNote(id)}
+              boxes={boxes} boxesError={boxesError} onOpenList={openTaskCard} onBoxesChanged={readBoxes}
+              onListFinished={finished => { listFinish.finished(finished); readBoxes(); }}
               onNavigate={target => { setQuery(""); if (target === "tasks-today") { setTodayList(true); } else setView(target); }}/>}
             {view === "reminders" && (
               <div className="view-control-row">
@@ -2909,7 +2931,7 @@ export default function App() {
                 />
               </>
             )}
-            {isTaskTab(view)&&!dashboard&&<StructureWorkspace todayFinished={<FinishedToday tasks={mergeFinishedTasks(dailyFinished, tasks)} today={today} zone={boot.preferences.timezone} busy={busy} canEdit={boot.workspace?.role!=="viewer"} onTask={openTaskCard} onReopen={task=>void toggle(task)}/>} tabs={<TaskTabs value={view} onChange={tab=>{setTodayList(tab==="today");setView(tab);}}/>} viewLink={()=>viewLink(savedViewState).href} onApplyTaskView={state=>{const parsed=viewStateSchema.safeParse(state);if(parsed.success){applySavedView(parsed.data);setTodayList(parsed.data.tab==="today");}}} sortFilter={workSort} control={taskRecordControl} selecting={selectingTasks} selectedIds={selectedTaskIds} onSelecting={value=>{setSelectingTasks(value);if(!value)setSelectedTaskIds([]);}} onSelection={setSelectedTaskIds} onBulk={()=>{setError("");setBulkEditor(tasks.filter(t=>selectedTaskIds.includes(t.id)));}} key={boot.workspace?.id??"personal"} onContext={setCollectionContext} statusFilter={taskStatus} homeFilter={organizationFilter.area||organizationFilter.space||projects.find(p=>p.name===projectFilter)?.id||""} layoutFilter={workLayout} groupFilter={workGroup} onQuery={setQuery} onTab={tab=>{setTodayList(tab==="today");setView(tab);}} capability="work" tab={view} today={today} query={query} canEdit={boot.workspace?.role!=="viewer"} canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} refresh={noteRevision} onChanged={()=>void load()} onVisible={setWorkVisible} onTask={id=>{const task=tasks.find(t=>t.id===id);if(task)openTaskCard(task);else void openNoteTask(id);}}/>}
+            {isTaskTab(view)&&!dashboard&&<StructureWorkspace listFinish={listFinish} todayFinished={<FinishedToday tasks={mergeFinishedTasks(dailyFinished, tasks)} today={today} zone={boot.preferences.timezone} busy={busy} canEdit={boot.workspace?.role!=="viewer"} onTask={openTaskCard} onReopen={task=>void toggle(task)}/>} tabs={<TaskTabs value={view} onChange={tab=>{setTodayList(tab==="today");setView(tab);}}/>} viewLink={()=>viewLink(savedViewState).href} onApplyTaskView={state=>{const parsed=viewStateSchema.safeParse(state);if(parsed.success){applySavedView(parsed.data);setTodayList(parsed.data.tab==="today");}}} sortFilter={workSort} control={taskRecordControl} selecting={selectingTasks} selectedIds={selectedTaskIds} onSelecting={value=>{setSelectingTasks(value);if(!value)setSelectedTaskIds([]);}} onSelection={setSelectedTaskIds} onBulk={()=>{setError("");setBulkEditor(tasks.filter(t=>selectedTaskIds.includes(t.id)));}} key={boot.workspace?.id??"personal"} onContext={setCollectionContext} statusFilter={taskStatus} homeFilter={organizationFilter.area||organizationFilter.space||projects.find(p=>p.name===projectFilter)?.id||""} layoutFilter={workLayout} groupFilter={workGroup} onQuery={setQuery} onTab={tab=>{setTodayList(tab==="today");setView(tab);}} capability="work" tab={view} today={today} query={query} canEdit={boot.workspace?.role!=="viewer"} canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} refresh={noteRevision} onChanged={()=>void load()} onVisible={setWorkVisible} onTask={id=>{const task=tasks.find(t=>t.id===id);if(task)openTaskCard(task);else void openNoteTask(id);}}/>}
             {view === "notifications" && (
               <div className="notice-page">
                 <div className="notice-page-head">
@@ -3022,7 +3044,7 @@ export default function App() {
                 }}
               />
             )}
-            {view === "organize" && !organizationEditor && <StructureWorkspace today={today} searchLabel="Search organization" onVisible={setOrganizationVisible} onContext={setCollectionContext} onQuery={setQuery} control={recordControl} query={query} canEdit={boot.workspace?.role!=="viewer"} canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} onTalkStructure={boot.workspace?.id?undefined:name=>startGuidedConversation(typesFieldsRequest(name))} refresh={noteRevision} onChanged={()=>void load()}/>}
+            {view === "organize" && !organizationEditor && <StructureWorkspace listFinish={listFinish} today={today} searchLabel="Search organization" onVisible={setOrganizationVisible} onContext={setCollectionContext} onQuery={setQuery} control={recordControl} query={query} canEdit={boot.workspace?.role!=="viewer"} canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} onTalkStructure={boot.workspace?.id?undefined:name=>startGuidedConversation(typesFieldsRequest(name))} refresh={noteRevision} onChanged={()=>void load()}/>}
 
             {view === "notes" && (
               <NotesPage
@@ -3624,6 +3646,7 @@ export default function App() {
           {toast}
         </div>
       )}
+      {listFinish.element}
       {selected && (
         <TaskDialog
           organization={organization}

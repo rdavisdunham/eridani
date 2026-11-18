@@ -802,6 +802,17 @@ class BugReport(Base):
     task_id: Mapped[str | None] = mapped_column(String(36), index=True)
 
 
+class TodayPin(Base):
+    """A box one person keeps on Today (today.py). The account is part of the key, so pinning in a shared
+    workspace never changes another member's Today. `pinned_at` orders the boxes; a pin holds no task data."""
+    __tablename__ = "today_pins"
+    owner_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    account_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), primary_key=True)
+    target_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    pinned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 # Backstop imports and direct ORM writers as well as domain commands.
 @event.listens_for(Task, "before_insert")
 @event.listens_for(Task, "before_update")

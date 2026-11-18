@@ -36,6 +36,7 @@ that keeps the shared sections on both cards; it does not change which entry poi
 | Entry point | Where |
 |---|---|
 | Today page task rows | `Today.tsx:142` → `App.tsx:2533` |
+| Today box menu "Open full list" (the quick list's dialog) | `TodayBox.tsx` → `Today` `onOpenList` → `openTaskCard`; TaskDetails routes the list to `QuickListDetail` |
 | Today schedule entries of kind task, Calendar task entries | `Today.tsx:156`, `CalendarView.tsx:214/433` → `openCalendarEntry` `App.tsx:270` (sets `calendarDetail` directly) |
 | Calendar and Task alerts pages (board, timeline, list rows; parent links) | `Workspace.tsx:401/442/457/481` → `App.tsx:2598` |
 | Calendar entry details: parent, linked task, Edit | `CalendarDetails.tsx:286/385/406/509/528` → `App.tsx:3425/3446` |
@@ -43,7 +44,7 @@ that keeps the shared sections on both cards; it does not change which entry poi
 | Note → Linked work | `Notes.tsx:777` → `App.tsx:3516` → `openNoteTask` `:998` |
 | `?record=task:<id>` link (Copy record link from TaskDetails), history restore of a task detail | `App.tsx:1005` `openLinkedRecord` |
 | Notifications: primary Open on a task notice | `App.tsx:2659` (`noticeDestination` → `open: "task"`) |
-| Quick capture launcher: always opens the new task | `App.tsx:2531` |
+| Quick list launcher ("+ Quick list", Tasks page only): always opens the new list. "Start a list" on Today opens no card; the new box takes focus | `App.tsx:2531` |
 | Inline capture: only when the new task does not match the current filters | `App.tsx:873` `drainCaptures` |
 | New task form saved | `App.tsx:3364` |
 | Dani `ui_show` on `all` with `entity_id`; `form: task` with `entity_id`; a calendar entry of kind task | `App.tsx:1434`, `:1411`, `:1239` |
@@ -110,6 +111,30 @@ routine-template labelling, focus on Close. TaskDetails lacks Related records, c
 inherited values, Contents with paging and progress, blockers, the home picker and the archive-contents
 dialog. Each needs data the other card does not load (TaskDetails has no schema; RecordCard has no
 `Task` or `mutate`), so none is a cheap shared component.
+
+## Quick lists on Today
+
+Neither card shows a quick list itself: both route it to `QuickListDetail`, the full-list dialog. On
+Today, a pinned list, or a dated one from its date on, is a box instead (`TodayBox.tsx`), built on the
+same checklist (`QuickListBody` and `useQuickList` in `QuickLists.tsx`) without the dialog. Boxes come
+from `GET /api/v1/today/boxes` and sit after Due and overdue.
+
+- Pins belong to the person (`POST /api/v1/today/pins`), so a viewer can pin too. The box menu and the
+  dialog's "Pin to Today" set the same pin, which no longer sets a do date. A pin changed by Dani or
+  another device arrives as a `today.changed` event, which reloads the boxes.
+- Checking the last open item finishes the list on any surface, and its box leaves Today. When a box
+  or a task row (Today, Task alerts, Calendar, the Tasks page) finishes it, App shows "Groceries is
+  done." with Undo (`list-finish.tsx`). The toast stays six seconds, longer while Undo has focus, and
+  survives a page change; Undo takes focus when the finished box held it. The dialog shows no toast:
+  the list stays open there, so unchecking the item is the undo.
+- Completing a list that still has unchecked items is refused with `LIST_HAS_OPEN_ITEMS`. From any row
+  or the Tasks page, App asks "2 items aren't checked. Finish the whole list?"; Finish list sends
+  `task.complete` with `complete_open_items`, and Undo reopens the list and those items. The box asks
+  the same question inside itself.
+- Due and overdue, and the Tasks Today tab its "See all" opens, also list a quick-list item that has
+  its own due or do date while its list is open. Such an item opens as an ordinary task. Inbox skips
+  lists that have a box.
+- A list holds up to 100 items; removed items and checked items already archived don't count.
 
 ## Drift guard
 

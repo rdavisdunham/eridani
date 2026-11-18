@@ -486,3 +486,141 @@ def test_run_restart_migration_links_runs_and_downgrades(test_database):
         with admin.connect() as c:
             c.exec_driver_sql(f'DROP DATABASE "{name}" WITH (FORCE)')
         admin.dispose()
+
+
+def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_database):
+    from datetime import UTC, datetime, timedelta
+    from sqlalchemy import text
+    from jarvis.models import Notification, Occurrence, OwnerSettings, Schedule, SharedWorkspace, TodayPin, UserAccount
+    from jarvis.structure_models import StructureRecord
+    name = 'jarvis_today_pins_' + uuid4().hex
+    supplied = make_url(test_database)
+    admin = create_engine(supplied.set(database='postgres'), isolation_level='AUTOCOMMIT')
+    target = supplied.set(database=name)
+    trial = None
+    with admin.connect() as c:
+        c.exec_driver_sql(f'CREATE DATABASE "{name}"')
+    try:
+        env = {**os.environ, 'JARVIS_DATABASE_URL': target.render_as_string(hide_password=False), 'JARVIS_ENV_FILE': '',
+               'JARVIS_TIMEZONE': 'America/Chicago'}
+        def migrate(*args):
+            result = subprocess.run([sys.executable, '-m', 'alembic', *args], cwd=ROOT, env=env, capture_output=True, text=True)
+            assert result.returncode == 0, result.stdout + result.stderr
+        migrate('upgrade', '0064_run_learnings')
+        trial = create_engine(target)
+        old = MetaData()
+
+        def add(model, **values):
+            # Rows in the previous release's shape: model defaults for the columns that exist before the upgrade.
+            key = model.__tablename__
+            table = old.tables[key] if key in old.tables else Table(key, old, autoload_with=trial)
+            for col in model.__table__.columns:
+                if col.name in table.c and col.name not in values and col.default is not None:
+                    values[col.name] = col.default.arg(None) if col.default.is_callable else col.default.arg
+            with trial.begin() as c:
+                c.execute(table.insert().values(**values))
+
+        def quick_list(identity, owner='release-owner', items=(), **values):
+            add(Task, id=identity, owner_id=owner, title=identity, is_quick_list=True, **values)
+            add(StructureRecord, id='record-' + identity, owner_id=owner, type_id='task', title=identity, task_id=identity)
+            for item, status, archived in items:
+                add(Task, id=item, owner_id=owner, title=item, status=status, parent_task_id=identity, archived=archived,
+                    archive_reason='automatic' if archived else None)
+                add(StructureRecord, id='record-' + item, owner_id=owner, type_id='task', title=item, task_id=item,
+                    parent_id='record-' + identity)
+
+        def columns():
+            found = inspect(trial)
+            return {t: {c['name'] for c in found.get_columns(t)} for t in found.get_table_names()}
+
+        def state(task):
+            return task.planned_date, task.status, task.revision, task.updated_at
+
+        # The old control wrote the workspace's own day: its saved time zone, else the app default.
+        with trial.connect() as c:
+            day = c.scalar(text("SELECT (now() AT TIME ZONE 'America/Chicago')::date"))
+            far_east_day = c.scalar(text("SELECT (now() AT TIME ZONE 'Pacific/Kiritimati')::date"))
+        instant = datetime(2026, 11, 1, 12, tzinfo=UTC)
+        add(UserAccount, id='creator-account', name='Creator')
+        add(SharedWorkspace, id='shared-space', name='Family', kind='space', creator_id='creator-account')
+        # The old "Pin to Today" wrote the day of pinning as the do-date.
+        quick_list('pinned-today', planned_date=day)
+        quick_list('tomorrow', planned_date=day + timedelta(days=1))
+        quick_list('pinned-last-week', planned_date=day - timedelta(days=7))
+        quick_list('shared-pinned', owner='shared-space', planned_date=day)
+        quick_list('next-week', planned_date=day + timedelta(days=7))
+        # A workspace far ahead of the default zone: its own today converts; its tomorrow does not.
+        add(OwnerSettings, owner_id='far-east', values={'timezone': 'Pacific/Kiritimati'})
+        quick_list('far-east-today', owner='far-east', planned_date=far_east_day)
+        quick_list('far-east-tomorrow', owner='far-east', planned_date=far_east_day + timedelta(days=1))
+        # A saved zone Postgres doesn't know falls back to the default.
+        add(OwnerSettings, owner_id='odd-zone', values={'timezone': 'Not/AZone'})
+        quick_list('odd-zone-today', owner='odd-zone', planned_date=day)
+        quick_list('finished-list', planned_date=day, status='completed', completed_at=instant, finished_at=instant)
+        quick_list('archived-list', planned_date=day, archived=True, archive_reason='manual', archived_at=instant)
+        add(Task, id='ordinary', owner_id='release-owner', title='ordinary', planned_date=day)
+        # Checked off before a list could finish by itself. A day after checking, items are filed away automatically.
+        quick_list('all-checked', items=[('bread', 'completed', False), ('milk', 'completed', True)])
+        quick_list('checked-long-ago', items=[('tea', 'completed', True)])
+        quick_list('pinned-and-checked', planned_date=day, items=[('stamps', 'completed', False)])
+        quick_list('half-checked', items=[('eggs', 'completed', True), ('butter', 'open', False)])
+        quick_list('cancelled-only', items=[('typo', 'cancelled', False)])
+        quick_list('empty-list')
+        add(Schedule, id='alert', owner_id='release-owner', title='all-checked', task_id='all-checked', timezone='UTC',
+            anchor_at=instant, next_run_at=instant + timedelta(days=30), status='active')
+        add(Occurrence, id='delivered', schedule_id='alert', revision=1, scheduled_at=instant, status='delivered')
+        add(Notification, id='notice', owner_id='release-owner', occurrence_id='delivered', title='all-checked',
+            task_id='all-checked', scheduled_at=instant)
+        tables = columns()
+        with Session(trial) as db:
+            before = {t.id: state(t) for t in db.scalars(select(Task))}
+        migrate('upgrade', 'head')
+        migrate('check')
+        # The previous release's models still fit: the upgrade only adds the pins table.
+        after = columns()
+        assert set(after) - set(tables) == {'today_pins'} and all(after[t] == tables[t] for t in tables)
+        with Session(trial) as db:
+            tasks = {t.id: t for t in db.scalars(select(Task))}
+            assert {(p.owner_id, p.account_id, p.kind, p.target_id) for p in db.scalars(select(TodayPin))} == {
+                ('release-owner', 'release-owner', 'quick_list', 'pinned-today'),
+                ('far-east', 'far-east', 'quick_list', 'far-east-today'),
+                ('odd-zone', 'odd-zone', 'quick_list', 'odd-zone-today'),
+                ('release-owner', 'release-owner', 'quick_list', 'pinned-last-week'),
+                ('shared-space', 'creator-account', 'quick_list', 'shared-pinned'),
+                ('release-owner', 'release-owner', 'quick_list', 'pinned-and-checked'),
+            }
+            for identity in ('pinned-today', 'pinned-last-week', 'shared-pinned', 'far-east-today', 'odd-zone-today'):
+                _, status, revision, updated = before[identity]
+                assert (tasks[identity].planned_date, tasks[identity].status, tasks[identity].revision) == (None, status, revision + 1)
+                assert tasks[identity].updated_at > updated
+            untouched = ('tomorrow', 'far-east-tomorrow', 'next-week', 'finished-list', 'archived-list', 'ordinary', 'half-checked', 'cancelled-only',
+                         'empty-list', 'bread', 'milk', 'tea', 'stamps', 'eggs', 'butter', 'typo')
+            assert {i: state(tasks[i]) for i in untouched} == {i: before[i] for i in untouched}
+            for identity in ('all-checked', 'checked-long-ago', 'pinned-and-checked'):
+                done = tasks[identity]
+                assert (done.status, done.archived) == ('completed', False) and done.revision > before[identity][2]
+                # The fields finishing a task sets.
+                assert done.completed_at == done.finished_at == done.updated_at
+                assert done.archive_eligible_at - done.finished_at == timedelta(hours=24)
+            # Pinned the old way and fully checked: if it reopens, its box returns without the old do-date.
+            assert tasks['pinned-and-checked'].planned_date is None
+            # Its deadline alert and delivered notice finish with the list, as when a task completes.
+            alert = db.get(Schedule, 'alert')
+            completed = tasks['all-checked'].completed_at
+            assert (alert.status, alert.completed_at, alert.next_run_at, alert.revision) == ('completed', completed, None, 2)
+            notice = db.get(Notification, 'notice')
+            assert notice.completed_at == notice.read_at == completed
+            assert db.get(Occurrence, 'delivered').status == 'completed'
+        migrate('downgrade', '0064_run_learnings')
+        assert 'today_pins' not in inspect(trial).get_table_names()
+        # Cleared dates and finished lists stay; both are ordinary lists to the previous release.
+        with trial.connect() as c:
+            assert c.scalar(text("SELECT planned_date FROM tasks WHERE id='pinned-today'")) is None
+            assert c.scalar(text("SELECT status FROM tasks WHERE id='all-checked'")) == 'completed'
+        migrate('upgrade', 'head')
+    finally:
+        if trial:
+            trial.dispose()
+        with admin.connect() as c:
+            c.exec_driver_sql(f'DROP DATABASE "{name}" WITH (FORCE)')
+        admin.dispose()

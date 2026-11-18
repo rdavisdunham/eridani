@@ -27,7 +27,7 @@ def actor(db, owner):
     return session.owner_id if session else owner
 
 
-def authorize_execution(db, owner, *, write=False):
+def authorize_execution(db, owner, *, write=False, tool=None):
     from .domain import DomainError, advisory
     from .models import AgentWork, UserAccount
 
@@ -51,10 +51,13 @@ def authorize_execution(db, owner, *, write=False):
     if row.credential_id:
         authorize(db, owner, "work:run", credential_id=row.credential_id, write=write)
     permission = role(db, owner, row.account_id, lock=write)
-    if write and permission == "viewer":
+    if write and permission == "viewer" and tool not in VIEWER_COMMANDS:
         raise DomainError("READ_ONLY", "You have view access to this workspace.", 403)
     return row.account_id, permission
 
+# A pin changes only the pinning person's own Today, so a viewer may pin. Every other write stays refused, and
+# a viewer's bot key, with the work it starts, stays read-only, pins included.
+VIEWER_COMMANDS = {"today.pin"}
 PERSONAL_TOOLS = ("review.", "onboarding.", "setup.", "memory.", "settings.", "calendar.", "linear.", "control.", "context.")
 PERSONAL_PATHS = (
     "/api/v1/questions",
@@ -147,6 +150,7 @@ def request_access(request, namespace, permission, account):
         "/api/v1/search/feedback",
         "/api/v1/search/events",
         "/api/v1/search/preferences",
+        "/api/v1/today/pins",
     }
     if (
         permission == "viewer"
@@ -160,7 +164,7 @@ def request_access(request, namespace, permission, account):
 def command_access(db, owner, tool, arguments):
     from .domain import DomainError, advisory
 
-    grant = authorize_execution(db, owner, write=True)
+    grant = authorize_execution(db, owner, write=True, tool=tool)
     from .bot_access import check_command, current_id
     bot = check_command(db, owner, tool, arguments) if current_id() else None
     workspace = db.get(SharedWorkspace, owner)
@@ -177,7 +181,7 @@ def command_access(db, owner, tool, arguments):
         namespace, permission = identity(db, session)
     if namespace != owner:
         raise DomainError("ACCESS_REVOKED", "The active workspace changed.", 403)
-    if permission == "viewer":
+    if permission == "viewer" and tool not in VIEWER_COMMANDS:
         raise DomainError("READ_ONLY", "You have view access to this workspace.", 403)
     archive_policy = tool == "settings.update" and set(arguments) == {"auto_archive_finished_tasks"}
     if archive_policy and permission != "owner":

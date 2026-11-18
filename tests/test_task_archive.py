@@ -227,6 +227,29 @@ def test_quick_checklist_history_survives_automatic_item_archive():
         assert checklist["items"][0]["archived"]
 
 
+@pytest.mark.parametrize("operation", ["add", "uncheck"])
+def test_finished_list_archived_automatically_reopens_on_add_or_uncheck(operation):
+    from jarvis.quick_lists import read
+    row = command("quicklist.create", title="Groceries", items=[{"title": "Milk"}])
+    item = row["items"][0]
+    command("task.complete", task_id=item["id"], expected_revision=item["revision"])
+    for identity in (row["id"], item["id"]):
+        age(identity, now() - GRACE * 2)
+    with session_scope() as db:
+        assert sweep_owner(db, "davin") == 2
+        filed = read(db, "davin", row["id"])
+    assert filed["archived"] and filed["status"] == "completed" and filed["items"][0]["archived"]
+    if operation == "add":
+        change = {"operation": "add", "title": "Eggs"}
+    else:
+        milk = filed["items"][0]
+        change = {"operation": "edit", "item_id": milk["id"], "expected_item_revision": milk["revision"], "completed": False}
+    result = command("quicklist.item", list_id=row["id"], expected_revision=filed["revision"], **change)
+    assert result["list_reopened"] is True
+    assert result["status"] == "open" and not result["archived"]
+    assert any(i["status"] == "open" and not i["archived"] for i in result["items"])
+
+
 def test_reopened_task_and_competing_sweeps_are_safe():
     from concurrent.futures import ThreadPoolExecutor
     row = finished()

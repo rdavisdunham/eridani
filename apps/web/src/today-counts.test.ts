@@ -1,12 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { doneToday, dueCounts, dueParts, dueReason } from "./today-counts";
+import { doneToday, dueCounts, dueParts, dueReason, dueTasks, inboxTasks } from "./today-counts";
 import { scheduledBy } from "./productivity";
 import type { Task } from "./types";
 
 const TODAY = "2026-11-05";
 const task = (id: string, extra: Partial<Task> = {}) => ({
-  id, title: id, status: "open", archived: false, due_date: null, planned_date: null, ...extra,
+  id, title: id, status: "open", archived: false, due_date: null, planned_date: null, priority: 0, created_at: "2026-11-01T00:00:00Z", ...extra,
 }) as Task;
+const list = (id: string, extra: Partial<Task> = {}) => task(id, { is_quick_list: true, ...extra });
+const itemOf = (id: string, listId: string, extra: Partial<Task> = {}) => task(id, { parent_task_id: listId, quick_list_parent_id: listId, ...extra });
+const ids = (tasks: Task[]) => tasks.map(t => t.id).sort();
+
+describe("Today's Due and overdue and Inbox", () => {
+  it("lists a quick-list item with its own date while its list is open, and no other item", () => {
+    const tasks = [
+      list("groceries"),
+      itemOf("milk", "groceries", { due_date: TODAY }),
+      itemOf("stamps", "groceries", { planned_date: "2026-11-03" }),
+      itemOf("eggs", "groceries", { planned_date: "2026-11-06" }),
+      itemOf("bread", "groceries"),
+      itemOf("butter", "groceries", { due_date: TODAY, status: "completed" }),
+      list("errands", { status: "completed" }),
+      itemOf("letter", "errands", { due_date: TODAY }),
+      // An archived list is not loaded on Today, so its items have no open list.
+      itemOf("old", "archived-list", { due_date: TODAY }),
+      task("report", { due_date: TODAY }),
+    ];
+    expect(ids(dueTasks(tasks, TODAY))).toEqual(["milk", "report", "stamps"]);
+  });
+
+  it("keeps an undated list with a box out of Due and Inbox, and lists the same list in Due once it has a date", () => {
+    const groceries = list("groceries");
+    const tasks = [groceries, itemOf("milk", "groceries"), list("loose"), task("idea")];
+    const due = dueTasks(tasks, TODAY);
+    expect(due).toEqual([]);
+    expect(ids(inboxTasks(tasks, due, new Set(["groceries"])))).toEqual(["idea", "loose"]);
+
+    const dated = [{ ...groceries, due_date: TODAY }, ...tasks.slice(1)];
+    const datedDue = dueTasks(dated, TODAY);
+    expect(ids(datedDue)).toEqual(["groceries"]);
+    expect(ids(inboxTasks(dated, datedDue, new Set(["groceries"])))).toEqual(["idea", "loose"]);
+  });
+
+  it("never lists a quick-list item in Inbox, dated tomorrow or not", () => {
+    const tasks = [list("groceries"), itemOf("eggs", "groceries", { planned_date: "2026-11-06" }), itemOf("bread", "groceries")];
+    const due = dueTasks(tasks, TODAY);
+    expect(due).toEqual([]);
+    expect(ids(inboxTasks(tasks, due, new Set()))).toEqual(["groceries"]);
+  });
+});
 
 describe("Today's due counts", () => {
   const due = [

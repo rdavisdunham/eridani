@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import rrule, tz
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import select, text
 
 from .config import get_settings
@@ -101,6 +101,19 @@ class VerifyConfig(Args):
     by: Literal["agent", "default", "human"] | None = None
 
 
+CONSENT = ("Only after the owner confirms finishing a quick list that still has unchecked items: "
+           "completes those items with the list. Without it that change is refused with LIST_HAS_OPEN_ITEMS.")
+CONSENTED_ITEMS = ("With complete_open_items: the open item IDs the owner agreed to, from LIST_HAS_OPEN_ITEMS "
+                   "open_item_ids. If the list's open items differ, nothing changes and the refusal returns the current ones.")
+
+
+def consented_items(args):
+    """Consent names the unchecked items the owner was shown, so an item added since is never completed unasked."""
+    if args.open_item_ids is not None and not args.complete_open_items:
+        raise ValueError("Send open_item_ids only with complete_open_items=true.")
+    return args
+
+
 class TaskChanges(Args):
     is_quick_list: bool = False
     quick_section: str = Field(default="", max_length=120)
@@ -138,6 +151,9 @@ class TaskChanges(Args):
     execution_target_id: str | None = Field(default=None, max_length=36)
     # How much of the owner a run needs (readiness.py); null hands the choice back to the readiness pass.
     run_route: Literal["auto", "direction", "plan_review", "human"] | None = None
+    complete_open_items: bool = Field(default=False, description=CONSENT)
+    open_item_ids: list[str] | None = Field(default=None, max_length=100, description=CONSENTED_ITEMS)
+    _consented_items = model_validator(mode="after")(consented_items)
 
 
 class TaskUpdate(TaskChanges):
@@ -157,6 +173,24 @@ class TaskSelectionUpdate(Args):
 class TaskState(Args):
     task_id: str
     expected_revision: int = Field(ge=1)
+
+
+class TaskComplete(TaskState):
+    complete_open_items: bool = Field(default=False, description=CONSENT)
+    open_item_ids: list[str] | None = Field(default=None, max_length=100, description=CONSENTED_ITEMS)
+    _consented_items = model_validator(mode="after")(consented_items)
+
+
+class TaskReopen(TaskState):
+    item_ids: list[str] = Field(
+        default_factory=list, max_length=100,
+        description="For a quick list: also reopen these items, such as completed_item_ids from finishing the whole list.")
+
+
+class TodayPinChange(Args):
+    """Pin a box to, or take it off, the Today of the person acting."""
+    target_id: str = Field(min_length=1, max_length=36)
+    pinned: bool
 
 
 class ScheduleCreate(Args):
@@ -298,8 +332,8 @@ COMMANDS = {
     "task.selection_update": TaskSelectionUpdate,
     "task.create": TaskCreate,
     "task.update": TaskUpdate,
-    "task.complete": TaskState,
-    "task.reopen": TaskState,
+    "task.complete": TaskComplete,
+    "task.reopen": TaskReopen,
     "schedule.create": ScheduleCreate,
     "schedule.cancel": ScheduleChange,
     "schedule.complete": ScheduleChange,
@@ -313,6 +347,7 @@ COMMANDS = {
     "notification.snooze": NotificationAction,
     "notification.dismiss": NotificationAction,
     "settings.update": SettingsUpdate,
+    "today.pin": TodayPinChange,
 }
 
 
@@ -352,7 +387,8 @@ def encode(value):
     return jsonable_encoder(value, custom_encoder={datetime: lambda v: (v.astimezone(UTC) if v.tzinfo else v).isoformat()})
 
 
-def serial(record):
+def serial(record, *, source=None):
+    """`source`: the task's provenance when the caller already read it (quick_lists.read reads a list's at once)."""
     result = encode(
         {
             c.name: getattr(record, c.name)
@@ -366,14 +402,14 @@ def serial(record):
         from .sources import task_source
         db = object_session(record)
         if db:
-            result["source"] = task_source(db, record)
+            result["source"] = source or task_source(db, record)
             if record.is_quick_list:
                 from sqlalchemy import func
                 checklist = select(Task).where(
                     Task.owner_id == record.owner_id, Task.parent_task_id == record.id,
                     Task.archived.is_(False) | ((Task.archive_reason == "automatic") & Task.status.in_(("completed", "cancelled"))),
                 )
-                result["quick_total"] = db.scalar(select(func.count()).select_from(checklist.subquery()))
+                result["quick_total"] = db.scalar(select(func.count()).select_from(checklist.where(Task.status != "cancelled").subquery()))
                 result["quick_done"] = db.scalar(select(func.count()).select_from(checklist.where(Task.status == "completed").subquery()))
             parent = db.get(Task, record.parent_task_id) if record.parent_task_id else None
             result["quick_list_parent_id"] = parent.id if parent and parent.is_quick_list else None
@@ -623,7 +659,7 @@ def execute(db, owner, command_id, tool, arguments):
     if tool.startswith("memory."):
         advisory(db, f"memory:{owner}")
     if tool.startswith(
-        ("review.", "quicksort.", "quicklist.", "onboarding.", "setup.", "settings.", "notelist.", "task.", "project.", "schedule.", "notification.", "note.", "space.", "area.", "goal.", "actor.", "record.", "structure.", "routing.", "template.")
+        ("review.", "quicksort.", "quicklist.", "onboarding.", "setup.", "settings.", "notelist.", "task.", "project.", "schedule.", "notification.", "note.", "space.", "area.", "goal.", "actor.", "record.", "structure.", "routing.", "template.", "today.")
     ):
         # Serialize owner graph changes so two concurrent parent edits cannot create a cycle.
         advisory(db, f"workspace:{owner}")
@@ -636,6 +672,9 @@ def execute(db, owner, command_id, tool, arguments):
         if tool.startswith(("task.", "note.")):
             from .structure import observe_core
             observe_core(db, owner, tool, data, command_id, arguments=arguments)
+        # Quick lists finish or reopen once the command's writes have settled, whichever surface made them.
+        from .quick_lists import settle
+        settle(db, owner, data, command_id)
     from .work_coordination import record_saved_resources
     record_saved_resources(db, owner, data)
     result = {
@@ -698,6 +737,9 @@ def mutate(db, owner, tool, args, command_id):
     if tool.startswith("quicklist."):
         from .quick_lists import mutate as capture_mutate
         return capture_mutate(db, owner, tool, args, command_id)
+    if tool == "today.pin":
+        from .today import change_pin
+        return change_pin(db, owner, args)
     if tool.startswith("onboarding."):
         from .onboarding import mutate as setup_mutate
         return setup_mutate(db, owner, tool, args, command_id)
@@ -776,7 +818,7 @@ def mutate(db, owner, tool, args, command_id):
         tasks, applied_ids, unchanged_ids = [], [], []
         for item in args.items:
             current = owned(db, Task, item.task_id, owner)
-            changes = item.model_dump(exclude_unset=True, exclude={"task_id", "expected_revision"})
+            changes = item.model_dump(exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items", "open_item_ids"})
             if all(getattr(current, key) == value for key, value in changes.items()):
                 tasks.append(serial(current))
                 unchanged_ids.append(current.id)
@@ -804,11 +846,15 @@ def mutate(db, owner, tool, args, command_id):
         db.add(task)
         db.flush()
         emit(db, owner, "task.changed", task.id, task.revision)
+        from .quick_lists import touch
+        touch(db, task.parent_task_id)
         return serial(task)
     if tool.startswith("task."):
         task = owned(db, Task, args.task_id, owner, lock=True)
         check_revision(task, args.expected_revision)
-        changes = args.model_dump(exclude_unset=True, exclude={"task_id", "expected_revision"})
+        old_status, old_archived, old_parent = task.status, task.archived, task.parent_task_id
+        changes = args.model_dump(
+            exclude_unset=True, exclude={"task_id", "expected_revision", "complete_open_items", "open_item_ids"})
         if tool == "task.complete":
             changes = {"status": "completed"}
         elif tool == "task.reopen":
@@ -825,6 +871,11 @@ def mutate(db, owner, tool, args, command_id):
         }:
             raise DomainError("INVALID_ARGUMENT", "Unknown task status.")
         nulls("task.update", changes)
+        extra = {}
+        if task.is_quick_list and changes.get("status") == "completed" and task.status != "completed":
+            from .quick_lists import complete_open_items
+            extra["completed_item_ids"] = complete_open_items(
+                db, owner, task, consent=args.complete_open_items, shown=args.open_item_ids, command_id=command_id)
         if any(key in changes for key in ("due_date", "due_time", "due_timezone")):
             changes = task_timing(db, owner, changes, task)
         changes = project_changes(db, owner, changes, task)
@@ -862,7 +913,15 @@ def mutate(db, owner, tool, args, command_id):
             task.revision += 1
             task.updated_at = now()
             emit(db, owner, "task.changed", task.id, task.revision)
-        return serial(task)
+        if (task.status != old_status or task.parent_task_id != old_parent
+                or (task.archived != old_archived and task.status not in {"completed", "cancelled"})):
+            # An item's state or membership changed: its quick list settles at the end of the command.
+            from .quick_lists import touch
+            touch(db, old_parent, task.parent_task_id)
+        if tool == "task.reopen" and args.item_ids:
+            from .quick_lists import reopen_items
+            extra["reopened_item_ids"] = reopen_items(db, owner, task, args.item_ids, command_id)
+        return {**serial(task), **extra}
     if tool == "schedule.create":
         if args.kind not in {"reminder", "recurring_task"}:
             raise DomainError("INVALID_ARGUMENT", "Choose a reminder or recurring task.")
@@ -992,6 +1051,8 @@ def mutate(db, owner, tool, args, command_id):
                 task.status, task.completed_at, task.archived = "open", None, False
                 task.revision += 1
                 emit(db, owner, "task.changed", task.id, task.revision)
+                from .quick_lists import touch
+                touch(db, task.parent_task_id)
             row.next_run_at = first_occurrence(row)
         previous_revision = row.revision
         row.revision += 1

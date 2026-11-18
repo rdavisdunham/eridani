@@ -529,6 +529,16 @@ def custom_read(db, bot, name, arguments):
     return custom_scrub(db, bot.owner_id, result, bot.scopes)
 
 
+LIST_READS = {"quicklist_list", "quicklist_get", "today_boxes"}
+
+
+def list_read(db, bot, name, arguments):
+    """Quick-list and Today reads shared by MCP and queued work. Pins are the key holder's, not the workspace's."""
+    from .quick_lists import tool_read
+
+    return scrub(tool_read(db, bot.owner_id, bot.account_id, name, arguments), bot.scopes)
+
+
 def cancel_work(db, bot, identity):
     from .agent_work import cancel
 
@@ -584,9 +594,8 @@ def backend_read(name, arguments, conversation_id):
                 ),
                 bot.scopes,
             )
-        if name in {"quicklist_list","quicklist_get"}:
-            from .quick_lists import listing,read
-            return scrub(read(db,bot.owner_id,arguments["list_id"]) if name=="quicklist_get" else listing(db,bot.owner_id,arguments.get("query","")),bot.scopes)
+        if name in LIST_READS:
+            return list_read(db, bot, name, arguments)
         if name == "time_resolve":
             from .time_tools import resolve_time
 

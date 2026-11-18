@@ -15,7 +15,7 @@ from scripts.app_eval.model_runner import PROBES, field_matches, grade
 
 def test_every_feature_has_25_to_50_distinct_evidence_based_cases():
     result = catalog.validate()
-    assert result["features"] == 46 and result["cases"] == 1180
+    assert result["features"] == 46 and result["cases"] == 1185
 
 
 def test_all_executable_case_ids_exist_in_catalog():
@@ -123,9 +123,71 @@ def test_clarification_requires_real_queue_state_and_preserves_data():
     assert grade({"needs_input": True}, before, before, {}, "needs_input", "")
 
 
+LISTS = {"owner": "eval-rowan", "refs": {"quick_lists": {k: {"id": k} for k in ("grocery", "party", "costco", "market", "hardware")}}}
+
+
+def lists_state(finished=False):
+    """Grocery (pinned to this person's Today) with one item, and Party groceries."""
+    done = {"status": "completed", "archived": True} if finished else {"status": "open", "archived": False}
+    return {
+        **state(),
+        "tasks": [
+            {"id": "grocery", "owner_id": "eval-rowan", "title": "Grocery", "parent_task_id": None, "revision": 4, **done},
+            {"id": "bread", "owner_id": "eval-rowan", "title": "Bread", "parent_task_id": "grocery", "revision": 2, **done},
+            {"id": "party", "owner_id": "eval-rowan", "title": "Party groceries", "parent_task_id": None, "revision": 2,
+             "status": "open", "archived": False},
+        ],
+        "today_pins": [{"owner_id": "eval-rowan", "account_id": "eval-rowan", "kind": "quick_list", "target_id": "grocery"}],
+    }
+
+
+def test_list_oracles_check_the_item_its_list_and_todays_pins():
+    add, reopen, unpin = PROBES["quick_capture.26"], PROBES["quick_capture.28"], PROBES["quick_capture.29"]
+    before = lists_state()
+    after = copy.deepcopy(before)
+    after["tasks"][0]["revision"] += 1
+    after["tasks"].append({"id": "milk", "owner_id": "eval-rowan", "title": "milk", "parent_task_id": "grocery",
+                           "status": "open", "archived": False})
+    assert grade(add, before, after, LISTS, "succeeded", {}) == []
+    wrong_list = copy.deepcopy(after)
+    wrong_list["tasks"][-1]["parent_task_id"] = "party"
+    assert grade(add, before, wrong_list, LISTS, "succeeded", {})
+    new_list = copy.deepcopy(before)
+    new_list["tasks"].append(dict(after["tasks"][-1], id="groceries", title="Groceries", parent_task_id=None))
+    new_list["today_pins"].append(dict(before["today_pins"][0], target_id="groceries"))
+    assert grade(add, before, new_list, LISTS, "succeeded", {})
+    # Adding to the finished, archived list brings it back open.
+    finished = lists_state(finished=True)
+    reopened = copy.deepcopy(finished)
+    reopened["tasks"][0].update(status="open", archived=False, revision=6)
+    reopened["tasks"].append(dict(after["tasks"][-1], title="Eggs"))
+    assert grade(reopen, finished, reopened, LISTS, "succeeded", {}) == []
+    reopened["tasks"][0]["archived"] = True
+    assert grade(reopen, finished, reopened, LISTS, "succeeded", {})
+    # Unpinning removes only this person's pin; the list itself stays as it was.
+    unpinned = copy.deepcopy(before)
+    unpinned["today_pins"] = []
+    assert grade(unpin, before, unpinned, LISTS, "succeeded", {}) == []
+    assert grade(unpin, before, before, LISTS, "succeeded", {})
+    unpinned["tasks"][0]["archived"] = True
+    assert grade(unpin, before, unpinned, LISTS, "succeeded", {})
+    assert any("Today pins" in f for f in grade(add, before, dict(after, today_pins=[]), LISTS, "succeeded", {}))
+
+
+def test_list_replies_must_name_the_lists_and_open_counts():
+    today, ask = PROBES["quick_capture.30"], PROBES["quick_capture.27"]
+    before = lists_state()
+    good = {"message": "Two boxes: Grocery with 3 open items, and Hardware store with two."}
+    assert grade(today, before, before, LISTS, "succeeded", good) == []
+    assert grade(today, before, before, LISTS, "succeeded", {"message": "Grocery has 3 open items."})
+    assert grade(today, before, before, LISTS, "succeeded", {"message": "Grocery and Hardware store are on Today."})
+    assert grade(ask, before, before, LISTS, "needs_input", "Costco groceries or Market groceries?") == []
+    assert grade(ask, before, before, LISTS, "needs_input", "Which list?")
+
+
 def test_contract_pass_does_not_claim_acceptance_pass():
     report = catalog.report([{"case_id": "task_capture.01", "layer": "command_contract", "status": "passed"}])
-    assert report["summary"] == {"not_run": 1180}
+    assert report["summary"] == {"not_run": 1185}
 
 
 def test_oracle_persona_is_not_a_model_prompt():

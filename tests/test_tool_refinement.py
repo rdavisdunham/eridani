@@ -56,6 +56,80 @@ def test_catalog_is_complete_and_discovery_is_local():
         session.load({"groups": ["shell"]})
 
 
+def test_today_boxes_and_pins_load_with_quick_capture_not_core():
+    """Dani reaches Today's boxes by loading the quick_capture group; the always-loaded set does not grow."""
+    names = {t["name"] for t in registry()}
+    group = GROUPS["quick_capture"][1]
+    assert {"today_boxes", "today_pin"} <= names & set(group)
+    assert len(group) == 8 and all(len(tools) < 10 for _, tools in GROUPS.values())
+    assert not {"today_boxes", "today_pin"} & set(CORE) and len(CORE) < 20
+    for policy in ("baseline", "discovery-v1", "lean-v1"):
+        assert not {"today_boxes", "today_pin"} & set(ToolSession(registry(), policy=policy).names)
+    assert "Today boxes" in ToolSession(registry(), policy="lean-v1").catalog["tools_load"]["description"]
+
+
+def test_today_list_descriptions_stay_short_and_carry_the_list_rules():
+    tools = {t["name"]: t["description"] for t in registry()}
+    # Instructions, not prose: each stays short (like the reviews_due guard in tests/test_record_reviews.py).
+    for name, limit in (("today_boxes", 500), ("today_pin", 300), ("quicklist_item", 500),
+                        ("quicklist_create", 450), ("task_complete", 400)):
+        assert len(tools[name]) < limit, (name, len(tools[name]))
+    # Which list the owner means: the boxes, then their pinned lists in any state, then other lists, else a new one.
+    boxes = tools["today_boxes"]
+    for step in ("read this first", "quicklist_list pinned=true", "reopens", "ask which", "quicklist_create"):
+        assert step in boxes, step
+    assert tools["quicklist_item"].startswith("Read today_boxes, quicklist_list or quicklist_get first")
+    assert "pinned=false" in tools["quicklist_create"]
+    # Finishing a whole list waits for the owner's yes; "undo that" unchecks, or reopens what finishing completed.
+    assert "owner's yes before complete_open_items" in tools["task_complete"]
+    assert "the refusal's open_item_ids" in tools["task_complete"]
+    assert "item_ids=completed_item_ids" in tools["task_complete"]
+    # Reminder completion is refused for such a list and points to task_complete with consent.
+    for name in ("notification_complete", "schedule_complete"):
+        assert "LIST_HAS_OPEN_ITEMS" in tools[name] and "task_complete and complete_open_items" in tools[name]
+    assert '"undo that" means unchecking that item (completed=false)' in tools["quicklist_item"]
+    assert "take groceries off Today" in tools["today_pin"]
+    assert "stays on Today until its date changes" in tools["today_pin"]
+
+
+async def test_dani_reads_and_pins_boxes_for_the_person_asking(client, monkeypatch):
+    from cryptography.fernet import Fernet
+    from jarvis import agent_work
+    from jarvis.config import get_settings
+    from jarvis.models import AgentWork, TodayPin
+    from test_accounts import client_for, post, shared
+    from test_accounts import command as web_command
+
+    for name, value in (("integration_encryption_key", Fernet.generate_key().decode()),
+                        ("openai_api_key", "synthetic"), ("gemini_api_key", "synthetic")):
+        monkeypatch.setattr(get_settings(), name, value)
+    guest = client_for("guest")
+    w = shared(client, guest)
+    team = web_command(client, "quicklist.create", title="Team checklist", items=[{"title": "Book room"}])
+    conversation = post(guest, "/conversations", {})
+    work = post(guest, "/work", {"turn_id": str(uuid4()), "conversation_id": conversation["id"],
+                                 "message": "Put the team checklist on my Today"})
+    with session_scope() as db:
+        row = db.get(AgentWork, work["id"])
+        db.expunge(row)
+    with agent_work.principal_for(row):
+        # The list is pinned to its creator's Today, not to the member Dani is working for.
+        assert (await call_tool(w["id"], row.id, 0, "today_boxes", {}))["boxes"] == []
+        assert (await call_tool(w["id"], row.id, 1, "quicklist_list", {"pinned": True}))["items"] == []
+        pinned = await call_tool(w["id"], row.id, 2, "today_pin", {"target_id": team["id"], "pinned": True})
+        assert pinned["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True, "on_today": True,
+                                  "reason": "pinned"}
+        boxes = (await call_tool(w["id"], row.id, 3, "today_boxes", {}))["boxes"]
+        assert [(box["target_id"], box["reason"]) for box in boxes] == [(team["id"], "pinned")]
+        listed = await call_tool(w["id"], row.id, 4, "quicklist_list", {"pinned": True})
+        assert [item["id"] for item in listed["items"]] == [team["id"]]
+        assert (await call_tool(w["id"], row.id, 5, "quicklist_get", {"list_id": team["id"]}))["pinned"] is True
+    with session_scope() as db:
+        # Each person's own pin: the creator's from making the list, the member's from asking Dani.
+        assert {p.account_id for p in db.scalars(select(TodayPin).where(TodayPin.owner_id == w["id"]))} \
+            == {"guest", get_settings().owner_id}
+
+
 def test_patch_omission_and_strict_read_schemas():
     catalog = {t["name"]: t for t in registry()}
     assert strict_compatible(catalog["tools_load"]["parameters"])

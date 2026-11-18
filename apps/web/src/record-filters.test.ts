@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {inHome,inTab,literalMatch,matchesQuery,rankOrder} from "./record-filters";
+import {inHome,inTab,literalMatch,matchesQuery,openQuickLists,quickItemShown,rankOrder} from "./record-filters";
 import {rankRecords,type SearchResult} from "./semantic-search";
 
 const PARITY="Parity: ignore time-varying parts of a session's resume when comparing";
@@ -41,6 +41,26 @@ describe("Main home filter (b8d2e28e)",()=>{
   expect(inTab(task,"inbox",[],"2026-10-28","2026-11-03")).toBe(false);
   expect(inTab(task,"all",[],"2026-10-28","2026-11-03")).toBe(true);
   expect(inTab(task,"week",["2026-11-01"],"2026-10-28","2026-11-03")).toBe(true);
+ });
+});
+
+describe("quick-list items on the Tasks page",()=>{
+ const lists=openQuickLists([
+  {is_quick_list:true,task_id:"groceries",archived:false,status_meaning:"open"},
+  {is_quick_list:true,task_id:"errands",archived:false,status_meaning:"completed"},
+  {is_quick_list:true,task_id:"old",archived:true,status_meaning:"open"},
+  {is_quick_list:false,task_id:"report",archived:false,status_meaning:"open"},
+ ]);
+ it("knows which quick lists are still open",()=>{
+  expect([...lists]).toEqual(["groceries"]);
+ });
+ it("shows an item on the Today tab while its list is open, and otherwise only to a search",()=>{
+  const milk={quick_list_parent_id:"groceries"},letter={quick_list_parent_id:"errands"};
+  expect(quickItemShown(milk,lists,true,false)).toBe(true);
+  expect(quickItemShown(letter,lists,true,false)).toBe(false);
+  expect(quickItemShown(milk,lists,false,false)).toBe(false);
+  expect(quickItemShown(letter,lists,false,true)).toBe(true);
+  expect(quickItemShown({quick_list_parent_id:null},lists,false,false)).toBe(true);
  });
 });
 

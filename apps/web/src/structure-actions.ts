@@ -14,5 +14,7 @@ export function useStructureActions(){
     catch(e){if(!(e instanceof ApiError)||e.code!=="NETWORK")pending.current=null;setError(e instanceof Error?e.message:"Could not save. Retry to check this request.");throw e;}
     finally{setBusy(false);}
   },[]);
-  return {run,error,busy,setError};
+  /** Drops a command that failed to send, so the next one does not send it first: the person gave it up. */
+  const forget=useCallback(()=>{pending.current=null;},[]);
+  return {run,error,busy,setError,forget};
 }

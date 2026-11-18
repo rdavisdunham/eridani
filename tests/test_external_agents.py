@@ -99,6 +99,74 @@ def test_commands_retry_and_revision_conflict_and_actor_activity(client):
         )  # Direct operations use no model/queue.
 
 
+def test_bot_completing_the_last_quick_list_item_finishes_the_list(client):
+    _, headers = key(client)
+    created = call(headers, "quicklist.create", {"title": "Groceries", "items": [{"title": "Milk"}]})
+    assert created.status_code == 200, created.text
+    checklist = created.json()["data"]
+    item = checklist["items"][0]
+    done = call(headers, "task.complete", {"task_id": item["id"], "expected_revision": item["revision"]})
+    assert done.status_code == 200, done.text
+    receipt = done.json()["data"]
+    assert receipt["list_finished"] is True and receipt["list_id"] == checklist["id"]
+    with session_scope() as db:
+        assert db.get(Task, checklist["id"]).status == "completed"
+        assert receipt["list_revision"] == db.get(Task, checklist["id"]).revision
+
+
+def test_bot_finishing_a_list_with_unchecked_items_needs_the_owners_yes(client):
+    _, headers = key(client)
+    checklist = call(headers, "quicklist.create", {
+        "title": "Groceries", "items": [{"title": "Milk"}, {"title": "Eggs"}]}).json()["data"]
+    refused = call(headers, "task.complete", {"task_id": checklist["id"], "expected_revision": checklist["revision"]})
+    assert refused.status_code == 409, refused.text
+    error = refused.json()["error"]
+    assert error["code"] == "LIST_HAS_OPEN_ITEMS"
+    items = [item["id"] for item in checklist["items"]]
+    assert error["data"] == {"task_id": checklist["id"], "revision": checklist["revision"], "open_count": 2,
+                             "open_item_ids": items}
+    with session_scope() as db:
+        assert [db.get(Task, identity).status for identity in (checklist["id"], *items)] == ["open"] * 3
+    agreed = call(headers, "task.complete", {"task_id": checklist["id"], "expected_revision": checklist["revision"],
+                                             "complete_open_items": True, "open_item_ids": error["data"]["open_item_ids"]})
+    assert agreed.status_code == 200, agreed.text
+    assert sorted(agreed.json()["data"]["completed_item_ids"]) == sorted(items)
+
+
+def test_bot_keys_read_lists_and_boxes_and_pin_for_their_own_account(client):
+    from jarvis.models import TodayPin
+    from jarvis.today import boxes
+    from test_accounts import client_for, shared
+
+    guest = client_for("guest")
+    workspace = shared(client, guest)
+    created = client.post("/api/v1/commands", json={"command_id": str(uuid4()), "tool": "quicklist.create", "arguments": {
+        "title": "Team checklist", "items": [{"title": "Book room"}], "pinned": False}})
+    team = created.json()["data"]
+    _, reader = key(guest, ["tasks:read"], "Reader")
+    offered = {tool["name"] for tool in rpc(client, reader, "tools/list").json()["result"]["tools"]}
+    assert {"quicklist_list", "quicklist_get", "today_boxes"} <= offered and "today_pin" not in offered
+    _, writer = key(guest)
+    pinned = call(writer, "today.pin", {"target_id": team["id"], "pinned": True})
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["data"] == {"kind": "quick_list", "target_id": team["id"], "pinned": True, "on_today": True,
+                                     "reason": "pinned"}
+    with session_scope() as db:
+        # The key holder's own Today, not the workspace's or its owner's.
+        assert [(pin.account_id, pin.target_id) for pin in db.scalars(select(TodayPin))] == [("guest", team["id"])]
+        assert boxes(db, workspace["id"], get_settings().owner_id) == []
+
+    def read(name, arguments):
+        result = rpc(client, reader, "tools/call", {"name": name, "arguments": arguments}).json()["result"]
+        assert not result.get("isError"), result
+        return result["structuredContent"]
+
+    assert [(box["target_id"], box["reason"]) for box in read("today_boxes", {})["boxes"]] == [(team["id"], "pinned")]
+    assert [row["id"] for row in read("quicklist_list", {"pinned": True})["items"]] == [team["id"]]
+    assert read("quicklist_get", {"list_id": team["id"]})["pinned"] is True
+    assert client.get("/api/v1/quick-lists/" + team["id"]).json()["pinned"] is False
+
+
 def test_parallel_retries_create_once_and_competing_edits_conflict(client):
     _, headers = key(client)
     operation = str(uuid4())

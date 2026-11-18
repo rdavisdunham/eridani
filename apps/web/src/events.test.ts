@@ -120,6 +120,9 @@ test("signal scope only invalidates what an event concerns", () => {
   expect(signalScope({ reason: "event", id: 1, kind: "setup.changed" })).toEqual({ load: false, revision: false, memory: false, setup: true });
   expect(signalScope({ reason: "open" })).toEqual({ load: true, revision: true, memory: true, setup: true });
 });
+test("a pin made by Dani or another device reloads the workspace, and with it Today's boxes", () => {
+  expect(signalScope({ reason: "event", id: 1, kind: "today.changed", entity_id: "list" }).load).toBe(true);
+});
 function deferred() {
   let resolve!: (v: number) => void;
   const promise = new Promise<number>((r) => { resolve = r; });

@@ -848,5 +848,175 @@
       "Before/after saved rows and receipts.",
       "Scenario-specific assertion results; device/voice evidence where requested."
     ]
+  },
+  {
+    "id": "quick_capture.26",
+    "feature": "quick_capture",
+    "title": "Add milk to my groceries list when Grocery is pinned and Party groceries is not.",
+    "inputs": [
+      "Add milk to my groceries list."
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "Dani reads the Today boxes first and adds Milk as an open item on the pinned Grocery list."
+    ],
+    "invariants": [
+      "No new list; Party groceries and every pin stay unchanged."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Create a pinned quick list Grocery (Bread, Butter) and an unpinned quick list Party groceries (Chips) with the app's own commands."
+    ],
+    "steps": [
+      "Ask Dani: Add milk to my groceries list.",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
+  },
+  {
+    "id": "quick_capture.27",
+    "feature": "quick_capture",
+    "title": "Add milk to my groceries list when two pinned lists both fit.",
+    "inputs": [
+      "Add milk to my groceries list."
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "Dani asks which list, naming Costco groceries and Market groceries."
+    ],
+    "invariants": [
+      "Nothing is saved: no item, no new list and no pin change."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Create pinned quick lists Costco groceries (Paper towels) and Market groceries (Apples) with the app's own commands."
+    ],
+    "steps": [
+      "Ask Dani: Add milk to my groceries list.",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
+  },
+  {
+    "id": "quick_capture.28",
+    "feature": "quick_capture",
+    "title": "Add eggs to a pinned Grocery list that finished and was auto-archived two days ago.",
+    "inputs": [
+      "Add eggs to my groceries list."
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "Dani finds the finished list among this person's pinned lists and adds Eggs; the list reopens, is no longer archived and has Eggs open, so its box returns to Today."
+    ],
+    "invariants": [
+      "No new list; the checked items and the pin stay as they were."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Create a pinned quick list Grocery (Bread, Butter) and check both items so it finishes, then file the list and its items as automatically archived two days ago."
+    ],
+    "steps": [
+      "Ask Dani: Add eggs to my groceries list.",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
+  },
+  {
+    "id": "quick_capture.29",
+    "feature": "quick_capture",
+    "title": "Take groceries off Today.",
+    "inputs": [
+      "Take groceries off Today."
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "Dani unpins Grocery from this person's Today."
+    ],
+    "invariants": [
+      "The list and its items are unchanged and it still appears in quicklist_list; Hardware store stays pinned."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Create pinned quick lists Grocery (Bread, Butter) and Hardware store (Hinges) with the app's own commands."
+    ],
+    "steps": [
+      "Ask Dani: Take groceries off Today.",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
+  },
+  {
+    "id": "quick_capture.30",
+    "feature": "quick_capture",
+    "title": "Ask Dani what's on my Today with two pinned lists.",
+    "inputs": [
+      "What's on my Today?"
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "The reply names both boxes with their open item counts: Grocery 3, Hardware store 2."
+    ],
+    "invariants": [
+      "No mutation from a read."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Create pinned quick lists Grocery (Bread, Butter, Milk, Eggs, with Bread checked) and Hardware store (Hinges, Wood glue) with the app's own commands."
+    ],
+    "steps": [
+      "Ask Dani: What's on my Today?",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
   }
 ]

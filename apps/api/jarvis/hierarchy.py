@@ -17,6 +17,9 @@ def project_parent(db, row):
     parent = db.get(StructureRecord, row.parent_id) if row.parent_id else None
     target = parent.task_id if parent and parent.owner_id == row.owner_id else None
     if task.parent_task_id != target:
+        # Moving an item out of (or into) a quick list settles that list at the end of the command.
+        from .quick_lists import touch
+        touch(db, task.parent_task_id, target)
         task.parent_task_id = target
         task.revision += 1
         task.updated_at = now()
@@ -82,14 +85,23 @@ def report(db, owner):
     ]}
 
 
+# A parent's children in their saved order.
+SAVED_ORDER = (Task.quick_order, Task.created_at, Task.id)
+
+
+def child_tasks(owner, parent_ids, *, include_finished_archives=False):
+    """Tasks whose records sit directly under the records `parent_ids`. Finished archives are the checked or
+    removed children the automatic archive filed, which a quick list keeps as its history."""
+    visible = Task.archived.is_(False)
+    if include_finished_archives:
+        visible = visible | ((Task.archive_reason == "automatic") & Task.status.in_(("completed", "cancelled")))
+    return select(Task).join(StructureRecord, StructureRecord.task_id == Task.id).where(
+        StructureRecord.owner_id == owner, StructureRecord.parent_id.in_(parent_ids), Task.owner_id == owner, visible)
+
+
 def children(db, owner, task_id, *, include_finished_archives=False):
     parent = for_task(db, owner, task_id)
     if not parent:
         return []
-    visible = Task.archived.is_(False)
-    if include_finished_archives:
-        visible = visible | ((Task.archive_reason == "automatic") & Task.status.in_(("completed", "cancelled")))
-    return list(db.scalars(select(Task).join(StructureRecord, StructureRecord.task_id == Task.id).where(
-        StructureRecord.owner_id == owner, StructureRecord.parent_id == parent.id,
-        Task.owner_id == owner, visible
-    ).order_by(Task.quick_order, Task.created_at, Task.id)))
+    return list(db.scalars(child_tasks(owner, [parent.id], include_finished_archives=include_finished_archives)
+                           .order_by(*SAVED_ORDER)))

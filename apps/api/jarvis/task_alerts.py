@@ -28,7 +28,12 @@ def new_task(db, owner, title, project_id=None, *, template=False):
 
 def finish_task(db, task, status="completed", *, sync_external=True, gated=False):
     from .domain import emit
+    from .quick_lists import complete_open_items, touch
 
+    if status == "completed" and task.is_quick_list and task.status != "completed":
+        # A reminder or deadline notice carries no consent, so a list with open items is refused.
+        complete_open_items(db, task.owner_id, task, consent=False)
+    previous = task.status
     if not gated:
         # Backstop for every entrance (stage F, M3): a run-owned task completes only through an authority.
         from .agent_actor import gate
@@ -65,3 +70,6 @@ def finish_task(db, task, status="completed", *, sync_external=True, gated=False
                 occurrence.status = "completed"
         emit(db, task.owner_id, "notification.changed", notice.id)
     emit(db, task.owner_id, "task.changed", task.id, task.revision)
+    if previous != status:
+        # Finished from a reminder or notice rather than a task edit: its quick list settles at the end of the command.
+        touch(db, task.parent_task_id)

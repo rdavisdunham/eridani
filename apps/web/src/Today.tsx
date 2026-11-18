@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { Bell, Check, CircleCheck, Flag, FolderKanban, Plus, Repeat2 } from "lucide-react";
 import { api } from "./api";
-import type { CalendarEntry, Schedule, Task } from "./types";
+import type { CalendarEntry, QuickList, Schedule, Task, TodayBoxData } from "./types";
 import type { NoteRecord } from "./Notes";
 import { notePreview } from "./note-preview";
 import { scheduledBy } from "./productivity";
@@ -13,6 +13,8 @@ import { TodayReviews } from "./Reviews";
 import { RunButton } from "./RunButton";
 import "./today.css";
 import { FinishedToday } from "./FinishedToday";
+import type { FinishedList } from "./QuickLists";
+import { TodayBoxes } from "./TodayBox";
 import { activeTodayEntry } from "./task-finished";
 import { doneToday as countDoneToday, dueCounts, dueParts } from "./today-counts";
 
@@ -34,6 +36,13 @@ type Props = {
   onEntry: (entry: CalendarEntry) => void;
   onNote: (id: string) => void;
   onNavigate: (target: "tasks-today" | "inbox" | "calendar" | "notes") => void;
+  /** This person's quick-list boxes, in order; null until they are first read. */
+  boxes: TodayBoxData[] | null;
+  boxesError?: string;
+  onOpenList: (list: QuickList) => void;
+  /** A pin changed or a list was started on Today: read the boxes again. */
+  onBoxesChanged: () => void;
+  onListFinished: (finished: FinishedList) => void;
 };
 
 const isOpen = (t: Task) => !t.archived && !t.quick_list_parent_id && !t.is_template && !["completed", "cancelled"].includes(t.status);
@@ -203,6 +212,8 @@ export function Today(p: Props) {
           {due.length ? <ul className="today-rows">{due.slice(0, 6).map(t => taskRow(t, true))}</ul>
             : <div className="empty"><span>Nothing is due. Plan a task for today above.</span><button type="button" className="btn btn-soft" onClick={() => captureRef.current?.focus()}>Add a task</button></div>}
         </section>
+        {p.boxesError && <p className="today-error" role="alert">{p.boxesError}</p>}
+        <TodayBoxes boxes={p.boxes} today={p.today} canEdit={p.canEdit !== false} onOpen={p.onOpenList} onChanged={p.onBoxesChanged} onFinished={p.onListFinished}/>
         <TodayReviews today={p.today} zone={p.zone} canEdit={p.canEdit !== false} refresh={p.tasks}/>
         <section className="panel" aria-labelledby="today-inbox-title">
           <header className="panel-header"><h2 id="today-inbox-title">Inbox</h2>{!!inbox.length && <span className="panel-count">{inbox.length}</span>}

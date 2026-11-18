@@ -148,6 +148,7 @@ import type {
   Notice,
   Schedule,
   Task,
+  TodayBoxData,
   View,
 } from "./types";
 import {
@@ -2135,6 +2136,19 @@ export default function App() {
   }
   const historyOff = conversationHistoryOff || !boot?.preferences.history_enabled;
   const today = dayInZone(boot?.preferences.timezone ?? "America/Chicago");
+  // This person's quick-list boxes on Today, read again with every workspace reload (a change-feed event or a save).
+  const [boxes, setBoxes] = useState<TodayBoxData[] | null>(null);
+  const [boxesError, setBoxesError] = useState("");
+  const [boxesRead, setBoxesRead] = useState(0);
+  useEffect(() => {
+    if (!dashboard || !boot) return;
+    let live = true;
+    api<{ boxes: TodayBoxData[] }>("/today/boxes?day=" + today)
+      .then((data) => { if (live) { setBoxes(data.boxes); setBoxesError(""); } })
+      .catch((e) => { if (live) setBoxesError((e as Error).message); });
+    return () => { live = false; };
+  }, [dashboard, !!boot, today, tasks, boxesRead]);
+  const readBoxes = () => setBoxesRead((n) => n + 1);
   const endOfWeek = new Date(today + "T12:00:00");
   endOfWeek.setDate(endOfWeek.getDate() + 6);
   const weekEnd = endOfWeek.toISOString().slice(0, 10);
@@ -2817,10 +2831,11 @@ export default function App() {
             </div>}
             {!isTaskTab(view) && view !== "settings" && view !== "questions" && view !== "needs" && view !== "remotea" && view !== "meetings" && view !== "person" && view !== "notes" && view !== "organize" && view !== "calendar" && <label className="page-search"><Search size={16}/><input aria-label={searchLabel} placeholder={searchLabel + "…"} value={query} onChange={e => setQuery(e.target.value)}/></label>}
             {!boot.workspace?.id && dashboard && <Onboarding compact established={setupEstablished(organization)} onChanged={()=>void load()} onTalk={startSetup} setup={setupSession} voiceAvailable={!!boot.capabilities.voice}/>}
-            {(dashboard||isTaskTab(view))&&boot.workspace?.role!=="viewer"&&<div className="quick-capture-launch"><QuickCapture today={today} onCreated={task=>{void load();openTaskCard(task);}}/></div>}
+            {isTaskTab(view)&&!dashboard&&boot.workspace?.role!=="viewer"&&<div className="quick-capture-launch"><QuickCapture onCreated={task=>{void load();openTaskCard(task);}}/></div>}
             {dashboard && boot && <Today tasks={tasks} finishedTasks={mergeFinishedTasks(dailyFinished, tasks)} schedules={schedules} today={today} zone={boot.preferences.timezone} busy={busy} canEdit={boot.workspace?.role!=="viewer"}
               noteRevision={noteRevision} quick={quick} onQuick={setQuick} onAdd={add} onTask={openTaskCard} onToggle={task => void toggle(task)}
               onEntry={openCalendarEntry} onNote={id => void openNote(id)}
+              boxes={boxes} boxesError={boxesError} onOpenList={openTaskCard} onBoxesChanged={readBoxes} onListFinished={readBoxes}
               onNavigate={target => { setQuery(""); if (target === "tasks-today") { setTodayList(true); } else setView(target); }}/>}
             {view === "reminders" && (
               <div className="view-control-row">

@@ -491,7 +491,7 @@ def test_run_restart_migration_links_runs_and_downgrades(test_database):
 def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_database):
     from datetime import UTC, datetime, timedelta
     from sqlalchemy import text
-    from jarvis.models import Notification, Occurrence, Schedule, SharedWorkspace, TodayPin, UserAccount
+    from jarvis.models import Notification, Occurrence, OwnerSettings, Schedule, SharedWorkspace, TodayPin, UserAccount
     from jarvis.structure_models import StructureRecord
     name = 'jarvis_today_pins_' + uuid4().hex
     supplied = make_url(test_database)
@@ -501,7 +501,8 @@ def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_
     with admin.connect() as c:
         c.exec_driver_sql(f'CREATE DATABASE "{name}"')
     try:
-        env = {**os.environ, 'JARVIS_DATABASE_URL': target.render_as_string(hide_password=False), 'JARVIS_ENV_FILE': ''}
+        env = {**os.environ, 'JARVIS_DATABASE_URL': target.render_as_string(hide_password=False), 'JARVIS_ENV_FILE': '',
+               'JARVIS_TIMEZONE': 'America/Chicago'}
         def migrate(*args):
             result = subprocess.run([sys.executable, '-m', 'alembic', *args], cwd=ROOT, env=env, capture_output=True, text=True)
             assert result.returncode == 0, result.stdout + result.stderr
@@ -535,17 +536,26 @@ def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_
         def state(task):
             return task.planned_date, task.status, task.revision, task.updated_at
 
+        # The old control wrote the workspace's own day: its saved time zone, else the app default.
         with trial.connect() as c:
-            day = c.scalar(text("SELECT (now() AT TIME ZONE 'UTC')::date"))
+            day = c.scalar(text("SELECT (now() AT TIME ZONE 'America/Chicago')::date"))
+            far_east_day = c.scalar(text("SELECT (now() AT TIME ZONE 'Pacific/Kiritimati')::date"))
         instant = datetime(2026, 11, 1, 12, tzinfo=UTC)
         add(UserAccount, id='creator-account', name='Creator')
         add(SharedWorkspace, id='shared-space', name='Family', kind='space', creator_id='creator-account')
         # The old "Pin to Today" wrote the day of pinning as the do-date.
         quick_list('pinned-today', planned_date=day)
-        quick_list('pinned-tomorrow', planned_date=day + timedelta(days=1))
+        quick_list('tomorrow', planned_date=day + timedelta(days=1))
         quick_list('pinned-last-week', planned_date=day - timedelta(days=7))
         quick_list('shared-pinned', owner='shared-space', planned_date=day)
         quick_list('next-week', planned_date=day + timedelta(days=7))
+        # A workspace far ahead of the default zone: its own today converts; its tomorrow does not.
+        add(OwnerSettings, owner_id='far-east', values={'timezone': 'Pacific/Kiritimati'})
+        quick_list('far-east-today', owner='far-east', planned_date=far_east_day)
+        quick_list('far-east-tomorrow', owner='far-east', planned_date=far_east_day + timedelta(days=1))
+        # A saved zone Postgres doesn't know falls back to the default.
+        add(OwnerSettings, owner_id='odd-zone', values={'timezone': 'Not/AZone'})
+        quick_list('odd-zone-today', owner='odd-zone', planned_date=day)
         quick_list('finished-list', planned_date=day, status='completed', completed_at=instant, finished_at=instant)
         quick_list('archived-list', planned_date=day, archived=True, archive_reason='manual', archived_at=instant)
         add(Task, id='ordinary', owner_id='release-owner', title='ordinary', planned_date=day)
@@ -573,16 +583,17 @@ def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_
             tasks = {t.id: t for t in db.scalars(select(Task))}
             assert {(p.owner_id, p.account_id, p.kind, p.target_id) for p in db.scalars(select(TodayPin))} == {
                 ('release-owner', 'release-owner', 'quick_list', 'pinned-today'),
-                ('release-owner', 'release-owner', 'quick_list', 'pinned-tomorrow'),
+                ('far-east', 'far-east', 'quick_list', 'far-east-today'),
+                ('odd-zone', 'odd-zone', 'quick_list', 'odd-zone-today'),
                 ('release-owner', 'release-owner', 'quick_list', 'pinned-last-week'),
                 ('shared-space', 'creator-account', 'quick_list', 'shared-pinned'),
                 ('release-owner', 'release-owner', 'quick_list', 'pinned-and-checked'),
             }
-            for identity in ('pinned-today', 'pinned-tomorrow', 'pinned-last-week', 'shared-pinned'):
+            for identity in ('pinned-today', 'pinned-last-week', 'shared-pinned', 'far-east-today', 'odd-zone-today'):
                 _, status, revision, updated = before[identity]
                 assert (tasks[identity].planned_date, tasks[identity].status, tasks[identity].revision) == (None, status, revision + 1)
                 assert tasks[identity].updated_at > updated
-            untouched = ('next-week', 'finished-list', 'archived-list', 'ordinary', 'half-checked', 'cancelled-only',
+            untouched = ('tomorrow', 'far-east-tomorrow', 'next-week', 'finished-list', 'archived-list', 'ordinary', 'half-checked', 'cancelled-only',
                          'empty-list', 'bread', 'milk', 'tea', 'stamps', 'eggs', 'butter', 'typo')
             assert {i: state(tasks[i]) for i in untouched} == {i: before[i] for i in untouched}
             for identity in ('all-checked', 'checked-long-ago', 'pinned-and-checked'):

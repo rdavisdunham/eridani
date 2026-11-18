@@ -2,20 +2,33 @@
 old way.
 
 The old "Pin to Today" control set a list's do-date to the day of pinning, so the list later showed as overdue. Each
-open, unarchived quick list with a do-date on or before tomorrow (UTC; the extra day covers time zones ahead of UTC)
-becomes a pin for the workspace owner, and its do-date is cleared. A list with a later do-date keeps it and shows up
-on that day. Open quick lists whose items were all checked before lists could finish by themselves are completed the
+open, unarchived quick list with a do-date on or before today, in the workspace's own time zone (the zone the old
+control used), becomes a pin for the workspace owner, and its do-date is cleared. A list with a later do-date keeps it
+and shows up on that day. Open quick lists whose items were all checked before lists could finish by themselves are completed the
 way finishing a task completes one, alerts and notices included. Every changed list and alert gets a new revision, so
 the record registry and open clients notice.
 
 A new table, and data changes that leave valid lists, so the previous release keeps working. Downgrade drops the
 pins; cleared do-dates and completed lists stay."""
+import os
+from zoneinfo import ZoneInfo
+
 import sqlalchemy as sa
 from alembic import op
 
 revision = "0065_today_pins"
 down_revision = "0064_run_learnings"
 branch_labels = depends_on = None
+
+
+def default_zone():
+    # The app's default time zone (the JARVIS_TIMEZONE setting), as the app itself falls back to it.
+    zone = os.environ.get("JARVIS_TIMEZONE") or "America/Chicago"
+    try:
+        ZoneInfo(zone)
+    except (ValueError, KeyError):
+        return "America/Chicago"
+    return zone
 
 
 def upgrade():
@@ -30,18 +43,23 @@ def upgrade():
     bind = op.get_bind()
     # The workspace owner's account: the namespace itself in a personal workspace, else the shared workspace's
     # creator. The list's creation time stands in for when it was pinned, so these boxes keep a stable order.
+    # "Today" is the workspace's own day: its saved time zone when that is a zone Postgres knows, else the app default.
     bind.execute(sa.text("""
-        WITH converted AS (
-            UPDATE tasks SET planned_date = NULL, revision = revision + 1, updated_at = now()
-            WHERE is_quick_list AND NOT archived AND status NOT IN ('completed', 'cancelled')
-              AND planned_date <= (now() AT TIME ZONE 'UTC')::date + 1
-            RETURNING id, owner_id, created_at
+        WITH zones AS (
+            SELECT settings.owner_id, settings."values"->>'timezone' AS zone FROM owner_settings settings
+            WHERE settings."values"->>'timezone' IN (SELECT name FROM pg_timezone_names)
+        ), converted AS (
+            UPDATE tasks SET planned_date = NULL, revision = tasks.revision + 1, updated_at = now()
+            WHERE tasks.is_quick_list AND NOT tasks.archived AND tasks.status NOT IN ('completed', 'cancelled')
+              AND tasks.planned_date <= (now() AT TIME ZONE COALESCE(
+                  (SELECT zones.zone FROM zones WHERE zones.owner_id = tasks.owner_id), :default_zone))::date
+            RETURNING tasks.id, tasks.owner_id, tasks.created_at
         )
         INSERT INTO today_pins (owner_id, account_id, kind, target_id, pinned_at)
         SELECT converted.owner_id, COALESCE(workspace.creator_id, converted.owner_id), 'quick_list', converted.id,
                converted.created_at
         FROM converted LEFT JOIN shared_workspaces workspace ON workspace.id = converted.owner_id
-    """))
+    """), {"default_zone": default_zone()})
     # A list's items are its children in the record tree, checked items already filed away automatically included.
     # Cancelled items count as neither open nor done, so a list of only cancelled items stays open.
     finished = bind.execute(sa.text("""

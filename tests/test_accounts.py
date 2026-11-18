@@ -410,7 +410,8 @@ def test_lists_pin_for_their_creator_on_every_path_and_dani_pins_for_a_viewer(cl
     with session_scope() as db:
         db.get(WorkspaceMember, (w["id"], "guest")).role = "viewer"
     # A key made while its holder could edit stays read-only after the downgrade.
-    assert call(headers, "today.pin", {"target_id": team["id"], "pinned": True}).status_code == 403
+    refused = call(headers, "today.pin", {"target_id": team["id"], "pinned": True})
+    assert refused.status_code == 403 and refused.json()["error"]["code"] == "READ_ONLY", refused.text
     assert (team["id"], "pinned") not in today_boxes(guest)
     with agent_work.principal_for(row), session_scope() as db:
         data = execute(db, w["id"], row.id + ":1", "today.pin", {"target_id": team["id"], "pinned": True})["data"]

@@ -41,6 +41,8 @@ PRIVILEGED = {"agents:control", "agents:session"}
 PERSONAL_ONLY = {"context:read", "context:write", "sources:write"}
 COMMAND_SCOPES = {
     "quicklist.create":"tasks:write", "quicklist.item":"tasks:write", "quicklist.promote":"tasks:write",
+    # A pin changes only the key holder's own Today. A viewer's key stays read-only, pins included.
+    "today.pin": "tasks:write",
     **{f"structure.{op}": "schema:write" for op in ("preview", "apply", "restore")},
     **{f"record.{op}": "records:write" for op in ("create", "update", "link", "contents", "restore_contents", "instantiate", "mark_reviewed", "review")},
     **{f"template.{op}": "records:write" for op in ("create", "update", "archive", "capture")},
@@ -53,7 +55,7 @@ COMMAND_SCOPES = {
     **{f"note.{op}": "notes:write" for op in ("create", "update", "append", "replace")},
 }
 READ_SCOPES = {
-    "quicklist_list":"tasks:read", "quicklist_get":"tasks:read",
+    "quicklist_list":"tasks:read", "quicklist_get":"tasks:read", "today_boxes": "tasks:read",
     "structure_schema": "schema:read",
     "record_list": "records:read",
     "record_browse": "records:read",

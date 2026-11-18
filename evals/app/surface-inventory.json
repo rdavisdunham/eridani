@@ -424,6 +424,10 @@
     {
       "name": "template.update",
       "feature": "custom_records"
+    },
+    {
+      "name": "today.pin",
+      "feature": "quick_capture"
     }
   ],
   "read_tools": [
@@ -634,6 +638,10 @@
     {
       "name": "time_resolve",
       "feature": "time_deadlines"
+    },
+    {
+      "name": "today_boxes",
+      "feature": "quick_capture"
     },
     {
       "name": "ui_activity",
@@ -2826,6 +2834,20 @@
       "handler": "task",
       "source": "apps/api/jarvis/api.py",
       "feature": "task_edit"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/today/boxes",
+      "handler": "today_boxes",
+      "source": "apps/api/jarvis/api.py",
+      "feature": "quick_capture"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/today/pins",
+      "handler": "today_pin",
+      "source": "apps/api/jarvis/api.py",
+      "feature": "quick_capture"
     },
     {
       "method": "POST",

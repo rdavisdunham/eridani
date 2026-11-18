@@ -175,7 +175,7 @@ class TaskReopen(TaskState):
 
 
 class TodayPinChange(Args):
-    """Pin a box to, or take it off, the Today of the person acting (today.py)."""
+    """Pin a box to, or take it off, the Today of the person acting."""
     target_id: str = Field(min_length=1, max_length=36)
     pinned: bool
 

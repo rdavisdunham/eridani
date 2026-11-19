@@ -15,7 +15,7 @@ from scripts.app_eval.model_runner import PROBES, field_matches, grade
 
 def test_every_feature_has_25_to_50_distinct_evidence_based_cases():
     result = catalog.validate()
-    assert result["features"] == 46 and result["cases"] == 1185
+    assert result["features"] == 46 and result["cases"] == 1186
 
 
 def test_all_executable_case_ids_exist_in_catalog():
@@ -185,9 +185,23 @@ def test_list_replies_must_name_the_lists_and_open_counts():
     assert grade(ask, before, before, LISTS, "needs_input", "Which list?")
 
 
+def test_a_task_added_to_a_project_for_today_must_be_filed_under_it():
+    probe = PROBES["quick_capture.31"]
+    fixture = {"owner": "eval-rowan", "refs": {"projects": {"lens": {"id": "lens", "task_id": "lens-task"},
+                                                            "beacon": {"id": "beacon", "task_id": "beacon-task"}}}}
+    before = state()
+    after = copy.deepcopy(before)
+    after["tasks"].append({"id": "new", "owner_id": "eval-rowan", "title": "fix the speaker toggle", "status": "open",
+                           "planned_date": "2030-01-14", "parent_task_id": "lens-task"})
+    assert grade(probe, before, after, fixture, "succeeded", {}) == []
+    for wrong in ({"parent_task_id": "beacon-task"}, {"parent_task_id": None}, {"planned_date": "2030-01-15"}):
+        assert grade(probe, before, {**after, "tasks": [*before["tasks"], {**after["tasks"][-1], **wrong}]},
+                     fixture, "succeeded", {}), wrong
+
+
 def test_contract_pass_does_not_claim_acceptance_pass():
     report = catalog.report([{"case_id": "task_capture.01", "layer": "command_contract", "status": "passed"}])
-    assert report["summary"] == {"not_run": 1185}
+    assert report["summary"] == {"not_run": 1186}
 
 
 def test_oracle_persona_is_not_a_model_prompt():

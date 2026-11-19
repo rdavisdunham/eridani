@@ -226,11 +226,23 @@ def check_command(db, owner, tool, arguments):
         raise DomainError(
             "INSUFFICIENT_SCOPE", "Use existing project/assignee IDs, or grant organization:write.", 403
         )
+    # A project's box shows the project, so pinning one needs the key to read the organization.
+    if tool == "today.pin" and "organization:read" not in row.scopes and pins_project(db, owner, arguments):
+        raise DomainError("INSUFFICIENT_SCOPE", "Pinning a project needs organization:read permission.", 403)
     # Mirrored records write through to core Tasks/Notes; records:write alone must not widen that.
     for core in core_scopes(db, owner, tool, arguments):
         if core not in row.scopes:
             raise DomainError("INSUFFICIENT_SCOPE", f"This record is backed by core data; grant {core}.", 403)
     return row
+
+
+def pins_project(db, owner, arguments):
+    from .today import PROJECT, target
+
+    try:
+        return target(db, owner, str(arguments.get("target_id") or ""))[0] == PROJECT
+    except DomainError:
+        return False  # The command itself reports what is wrong.
 
 
 def core_scopes(db, owner, tool, arguments):

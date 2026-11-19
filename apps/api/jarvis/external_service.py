@@ -533,10 +533,15 @@ LIST_READS = {"quicklist_list", "quicklist_get", "today_boxes"}
 
 
 def list_read(db, bot, name, arguments):
-    """Quick-list and Today reads shared by MCP and queued work. Pins are the key holder's, not the workspace's."""
+    """Quick-list and Today reads shared by MCP and queued work. Pins are the key holder's, not the workspace's.
+    A project's box names the project, so a key without organization:read reads only the list boxes."""
     from .quick_lists import tool_read
+    from .today import PROJECT
 
-    return scrub(tool_read(db, bot.owner_id, bot.account_id, name, arguments), bot.scopes)
+    result = tool_read(db, bot.owner_id, bot.account_id, name, arguments)
+    if name == "today_boxes" and "organization:read" not in bot.scopes:
+        result = {**result, "boxes": [box for box in result["boxes"] if box["kind"] != PROJECT]}
+    return scrub(result, bot.scopes)
 
 
 def cancel_work(db, bot, identity):

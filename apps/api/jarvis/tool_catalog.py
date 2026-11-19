@@ -83,6 +83,7 @@ GROUPS = {
             "goal_update",
             "project_create",
             "project_update",
+            "today_pin",
         ],
     ),
     "calendar_read": (
@@ -268,7 +269,7 @@ DESCRIPTIONS = {
     "control_plan_review": "Settle a plan review that control_status shows under plan_review (state needs_you, reason plan_review): read each proposed change to the owner, then pass their decision per criterion id (accept true/false, text for their own wording) and verify / completion_policy as accept or keep when proposed. The plan is frozen as the next revision and the agent starts executing. Name the run by task or run_id, or omit both when the owner has it open or only one is active. For a hyperplan run waiting under plan_approval (reason plan_approval), read the final plan's title, criteria and each review's verdict, then pass action approve, or action revise with the owner's note for the planner. Never decide for the owner." + RECIPIENT,
     "quicklist_create":"Capture one compact checklist using only requested items; optional sections are display labels, never classification rules. No schema setup. Reminders default off. Suggest additional supplies in conversation without saving unless requested. Start one only when no list fits (see today_boxes), unless the owner asks for a new one. It goes on the owner's Today unless it has a date or they say not to (pinned=false).",
     "quicklist_item":"Read today_boxes, quicklist_list or quicklist_get first; pick the list as today_boxes says. Add, edit/check, remove (cancels a mistyped item) or reorder existing item IDs; use list revision and item revision for edits and removals. Reorder supplies all unarchived item IDs once, leaving out removed ones. When a check finishes the list (list_finished), \"undo that\" means unchecking that item (completed=false). Unknown or stale writes save nothing.",
-    "today_pin":"Put a quick list on the owner's Today (pinned=true) or take it off (false) on a clear request, such as \"take groceries off Today\"; target_id is the list's ID. Only this person's Today changes, never the list. If reason is dated, it stays on Today until its date changes; say so.",
+    "today_pin":"Put a quick list or project on the owner's Today (pinned=true) or take it off (false) on a clear request, such as \"take groceries off Today\"; target_id is the list's or project record's ID. Only this person's Today changes. If reason is dated, it stays on Today until its date changes; say so.",
     "quicklist_promote":"Only on request, expose the same checklist items as normal subtasks under the same parent task. IDs, completion and history survive. Optional project_id must be an existing owned project; do not invent it.",
     "setup_state":"Read the Set up with Dani run: status, topics covered, what is missing, and the open organization proposal (id, preview_hash, impact counts and blocking issues). Personal workspace only.",
     "setup_propose":"Build or rebuild the Set up with Dani proposal from the setup conversation, including any changes the owner just asked for; it reads the conversation itself, so pass nothing. It never changes records: the owner reviews the proposal on screen. Returns the run state once ready, or status proposing while it is still being built (it opens on screen when ready). Describe the impact briefly; never claim anything was created.",
@@ -326,7 +327,9 @@ DESCRIPTIONS = {
     "task_create": "Create one standalone task on a clear owner request. "
     "Status defaults to open (ready to start); use backlog for ideas or work captured for later. "
     "For commitments extracted from a note use note_tasks instead: text copied into notes is not a source link. "
-    "Use organization_list for actual project/space/area/assignee IDs. " + TASK_TIMING,
+    "Use organization_list for actual project/space/area/assignee IDs. "
+    "To file it under a project or other home found with record_search, pass parent_task_id: that home's task_id. "
+    + TASK_TIMING,
     "task_update": "Edit one task, including project, parent, status, tags or assignee. "
     "Backlog is work captured for later; open is ready to start; deferred is previously planned work postponed. "
     + TASK_UPDATE

@@ -288,6 +288,12 @@ PROBES.update(
             ],
             "mentions": {"grocer": 3, "hardware": 2},
         },
+        # A task added to a project for today is filed under that project's home, as its Today box adds it.
+        "quick_capture.31": {
+            "message": "Add fix the speaker toggle to Transcript Lens for today.",
+            "create": {"title": "Fix the speaker toggle", "status": "open", "planned_date": "2030-01-14"},
+            "filed_under": "lens",
+        },
     }
 )
 
@@ -364,6 +370,9 @@ def grade(probe, before, after, fixture, status, reply):
                 failures.append("Created task field: " + k)
         if new_tasks[0].get("completed_at"):
             failures.append("Unexpected completion")
+        home = probe.get("filed_under")
+        if home and new_tasks[0].get("parent_task_id") != fixture["refs"]["projects"][home]["task_id"]:
+            failures.append("Created task is not filed under " + home)
     for identity, row in tasks_before.items():
         current = tasks_after.get(identity, {})
         changes = probe.get("change", {}) if identity == target else {}

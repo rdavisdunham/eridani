@@ -3,13 +3,13 @@
 Start with [the functionality overview](../../docs/APP_FUNCTIONALITY.md),
 [Rowan’s persona](personas/rowan-v1.md), and [execution protocols](protocols.md).
 
-The catalog contains **1,185 scenarios across 46 features**. The on-demand runner
+The catalog contains **1,186 scenarios across 46 features**. The on-demand runner
 indexes every scenario, selects its available adapters, and reports unmet criteria.
 This does **not** mean every scenario is automated. Current bindings cover **245**
-complete acceptance scenarios; component evidence is available for **231** cases
+complete acceptance scenarios; component evidence is available for **232** cases
 (overlapping acceptance coverage). Remaining scenarios retain incomplete or physical
 acceptance requirements. Batch C adds 25 Quick-capture and 25 onboarding scenarios,
-with 12 exact deterministic bindings; Today boxes add five Quick-capture scenarios for Dani. Agent control (remotea) has 31 scenarios, six of them
+with 12 exact deterministic bindings; Today boxes add six Quick-capture scenarios for Dani. Agent control (remotea) has 31 scenarios, six of them
 bound; its outcome eval lives in `evals/agent_control/`. Meeting context (`meeting_context`,
 pipeline type) adds 31 scenarios covering submission, the pipeline, cited retrieval, review and publication,
 notices and pause controls, not yet bound; its `tests/context/` suites are supporting evidence, and engine

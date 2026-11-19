@@ -126,7 +126,9 @@ export function ProjectBox({ box, today, canEdit, row, tasks, onOpenProject, onC
     e.preventDefault();
     const text = title.trim();
     if (!text || !box.add) return;
-    void run("task.create", { title: text, ...box.add, planned_date: today }).then(() => { setTitle(""); onChanged(); }, () => {});
+    // Cleared at once, so typing the next task while this one saves is kept; a failed save puts its text back.
+    setTitle("");
+    void run("task.create", { title: text, ...box.add, planned_date: today }).then(onChanged, () => setTitle(now => now.trim() ? now : text));
   };
   return <section className="panel today-box" aria-labelledby={heading}>
     <header className="panel-header">
@@ -196,6 +198,8 @@ export function TodayBoxes({ boxes, today, canEdit, onOpen, onChanged, onFinishe
   return <>
     {shown.map(box => box.kind === "project"
       ? <ProjectBox key={box.target_id} box={box} today={today} canEdit={canEdit} onChanged={onChanged} {...project} />
+      // A kind this page does not know yet shows no box rather than breaking Today.
+      : box.kind !== "quick_list" ? null
       : <TodayBox key={box.target_id} box={box} today={today} canEdit={canEdit} focusAdd={focus === box.target_id} onOpen={onOpen}
         onChanged={() => { drop(box.target_id); onChanged(); }} onFinished={finished => { drop(box.target_id); onFinished(finished); }} />)}
     {canEdit && <StartList onStarted={list => {

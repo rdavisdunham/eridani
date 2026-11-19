@@ -94,7 +94,7 @@ def test_today_list_descriptions_stay_short_and_carry_the_list_rules():
     assert "stays on Today until its date changes" in tools["today_pin"]
     # A project box: pin it by its record, and add to it as a task filed under that project for today.
     assert "quick list or project" in tools["today_pin"] and "project record's ID" in tools["today_pin"]
-    assert "project box holds its tasks due by today" in boxes and "task_create, the box's add and planned_date today" in boxes
+    assert "project box holds its tasks due by today" in boxes and "task_create, its add and planned_date today" in boxes and "match list boxes by meaning" in boxes
     assert "pass parent_task_id: that home's task_id" in tools["task_create"]
 
 

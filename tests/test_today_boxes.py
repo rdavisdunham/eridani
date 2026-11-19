@@ -345,6 +345,19 @@ def test_an_imported_project_with_no_task_of_its_own_adds_by_its_project_id():
     assert project_box(legacy["id"])["add"] == {"project_id": legacy["id"]}
 
 
+def test_dani_and_agents_read_a_project_boxs_tasks_as_compact_rows():
+    from jarvis.task_tools import COMPACT_FIELDS
+
+    eridani = home()
+    task("Write the release notes", eridani, due_date="2020-01-01", notes="n" * 300)
+    pin_project(eridani)
+    with session_scope() as db:
+        box = quick_lists.tool_read(db, OWNER, OWNER, "today_boxes", {})["boxes"][0]
+    row, = box["tasks"]
+    assert set(row) <= {*COMPACT_FIELDS, "source", "notes_preview", "notes_truncated"}
+    assert (row["title"], row["notes_preview"], row["notes_truncated"]) == ("Write the release notes", "n" * 200, True)
+
+
 def test_a_pinned_project_with_nothing_due_keeps_an_empty_box():
     eridani = home()
     task("Someday", eridani)

@@ -237,11 +237,16 @@ def check_command(db, owner, tool, arguments):
 
 
 def pins_project(db, owner, arguments):
+    """Whether today.pin would pin a project. The ID is read the way the command reads it, so padding it with
+    spaces cannot slip a project past the scope check."""
+    from pydantic import ValidationError
+
+    from .domain import TodayPinChange
     from .today import PROJECT, target
 
     try:
-        return target(db, owner, str(arguments.get("target_id") or ""))[0] == PROJECT
-    except DomainError:
+        return target(db, owner, TodayPinChange.model_validate(arguments).target_id)[0] == PROJECT
+    except (DomainError, ValidationError):
         return False  # The command itself reports what is wrong.
 
 

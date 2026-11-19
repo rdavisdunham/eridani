@@ -10,6 +10,7 @@ import type { CustomRecord, Schema } from "./structure-types";
 const schema = { revision: 1, types: [], relationships: [], understandings: [] } as unknown as Schema;
 const home = (type_id: string, extra: Partial<CustomRecord> = {}) =>
   ({ id: "P", type_id, title: "Eridani", body: "", home: [], archived: false, ...extra }) as CustomRecord;
+const heading = () => host.querySelector(".org-container-head h2")?.textContent;
 
 let host: HTMLDivElement, root: Root, calls: { method: string; url: string; body: Record<string, unknown> }[];
 let parent: CustomRecord, pins: { kind: string; target_id: string }[];
@@ -54,12 +55,12 @@ describe("pinning a project to Today from Organize", () => {
     expect(button("Unpin from Today")).toBeDefined();
   });
 
-  it("offers no pin for other homes or an archived project", async () => {
-    for (const record of [home("client"), home("project", { archived: true })]) {
+  it.each([["a client", home("client", { title: "ABC" })], ["an archived project", home("project", { title: "Old launch", archived: true })]])(
+    "offers no pin for %s", async (_, record) => {
       parent = record; pins = [];
       await browse();
+      expect(heading()).toBe(record.title);
       expect(button("Pin to Today")).toBeUndefined();
       expect(button("Unpin from Today")).toBeUndefined();
-    }
-  });
+    });
 });

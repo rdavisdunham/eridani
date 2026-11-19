@@ -5,7 +5,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickListDetail, type FinishedList } from "./QuickLists";
 import { ProjectBox, TodayBox, TodayBoxes } from "./TodayBox";
-import type { ProjectBoxData, QuickList, QuickListBoxData, Task } from "./types";
+import type { ProjectBoxData, QuickList, QuickListBoxData, Task, TodayBoxData } from "./types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const TODAY = "2026-11-18";
@@ -452,6 +452,25 @@ describe("a project's box on Today", () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the next task typed while one saves, and gives a failed one back its text", async () => {
+    const save = deferred();
+    serve = () => save.promise;
+    await render(project(projectBox([])));
+    const field = byLabel<HTMLInputElement>("Add to Eridani");
+    await act(async () => type(field, "Fix the voice toggle"));
+    await act(async () => field.form!.requestSubmit());
+    expect(field.value).toBe("");
+    await act(async () => type(field, "Write notes"));
+    await act(async () => save.resolve(done(work("n", "Fix the voice toggle"))));
+    await flush();
+    expect(field.value).toBe("Write notes");
+    serve = () => refused("NOT_FOUND", "That record is no longer available.");
+    await act(async () => field.form!.requestSubmit());
+    await flush();
+    expect(field.value).toBe("Write notes");
+    expect(alerts()).toEqual(["That record is no longer available."]);
+  });
+
   it("drops a task the moment it is finished anywhere, such as in Due and overdue", async () => {
     const release = work("a", "Ship the release");
     await render(project(projectBox([release, work("b", "Write notes")]), { tasks: [{ ...release, status: "completed" }] }));
@@ -480,6 +499,13 @@ describe("a project's box on Today", () => {
     await flush();
     expect(calls.map(c => [c.method, c.url, c.body.target_id, c.body.pinned])).toEqual([["POST", "/api/v1/today/pins", "P", false]]);
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no box for a kind this page does not know yet", async () => {
+    const later = { kind: "goal", target_id: "G", reason: "pinned", pinned: true, date: null, title: "Run a marathon" } as unknown as TodayBoxData;
+    await render(<TodayBoxes boxes={[later, pinnedBox(quickList([item("a", "Milk")]))]} today={TODAY} canEdit onOpen={() => {}}
+      onChanged={() => {}} onFinished={() => {}} {...noProjects}/>);
+    expect([...host.querySelectorAll(".today-box h2")].map(e => e.textContent)).toEqual(["Groceries"]);
   });
 
   it("sits among the quick-list boxes in Today's order", async () => {

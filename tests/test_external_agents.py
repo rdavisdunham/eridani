@@ -173,8 +173,10 @@ def test_a_bot_key_needs_organization_read_to_pin_or_see_a_project_box(client):
     revision = client.get("/api/v1/structure").json()["revision"]
     project = command(client, "record.create", type_id="project", title="Release", schema_revision=revision)
     _, tasks_only = key(client, ["tasks:write"], "Tasks only")
-    refused = call(tasks_only, "today.pin", {"target_id": project["id"], "pinned": True})
-    assert refused.status_code == 403 and refused.json()["error"]["code"] == "INSUFFICIENT_SCOPE", refused.text
+    # The project's record, the task behind it, and an ID padded with spaces all name the project.
+    for target_id in (project["id"], project["task_id"], " " + project["id"]):
+        refused = call(tasks_only, "today.pin", {"target_id": target_id, "pinned": True})
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "INSUFFICIENT_SCOPE", refused.text
     _, organizer = key(client, ["tasks:write", "organization:read"], "Organizer")
     pinned = call(organizer, "today.pin", {"target_id": project["id"], "pinned": True})
     assert pinned.status_code == 200, pinned.text

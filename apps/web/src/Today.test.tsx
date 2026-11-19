@@ -13,7 +13,7 @@ const task = (id: string, title: string, extra: Partial<Task> = {}) => ({
 const item = (id: string, title: string, extra: Partial<Task> = {}) => task(id, title, { parent_task_id: "L", quick_list_parent_id: "L", ...extra });
 const groceries = (extra: Partial<Task> = {}) => task("L", "Groceries", { is_quick_list: true, ...extra });
 const box = (list: Task, items: Task[]): TodayBoxData => ({
-  kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null,
+  kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, title: list.title,
   list: { ...list, items, done: 0, total: items.length } as QuickList,
 });
 
@@ -22,7 +22,7 @@ function today(tasks: Task[], boxes: TodayBoxData[], day = MONDAY) {
   const host = document.createElement("div");
   host.innerHTML = renderToStaticMarkup(<Today tasks={tasks} schedules={[]} today={day} zone="UTC" busy={false} noteRevision={0}
     quick="" onQuick={() => {}} onAdd={() => {}} onTask={() => {}} onToggle={() => {}} onEntry={() => {}} onNote={() => {}} onNavigate={() => {}}
-    boxes={boxes} onOpenList={() => {}} onBoxesChanged={() => {}} onListFinished={() => {}}/>);
+    boxes={boxes} onOpenList={() => {}} onBoxesChanged={() => {}} onListFinished={() => {}} onOpenProject={() => {}}/>);
   const rows = (title: string) => [...host.querySelectorAll(`section[aria-labelledby="${title}"] .check`)].map(e => e.getAttribute("aria-label"));
   return { host, due: rows("today-due-title"), inbox: rows("today-inbox-title"), boxes: [...host.querySelectorAll(".today-box h2")].map(e => e.textContent) };
 }

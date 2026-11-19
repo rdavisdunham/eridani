@@ -1,11 +1,12 @@
 import {useCallback,useEffect,useLayoutEffect,useRef,useState,type RefObject} from "react";
 import {Check,X} from "lucide-react";
 import {z} from "zod";
-import {api,ApiError,command,commandId,post} from "./api";
+import {api,ApiError,command} from "./api";
 import {Dialog} from "./ux";
 import {useStructureActions} from "./structure-actions";
 import {useEditor} from "./editor-control";
 import type {QuickList,Task} from "./types";
+import {pinToToday} from "./today-pins";
 import "./capture.css";
 function CaptureGuard({busy,dirty,close}:{busy:boolean;dirty:boolean;close:()=>void}){useEditor({kind:"task",mode:"edit",dirty,busy,schema:z.object({}),values:{capture:"Quick list"},patch:async()=>{throw Error("Fill the Quick list form or use Quick capture tools.");},close,discard:close});return null;}
 export function parseChecklist(text:string){let section="";return text.split("\n").flatMap(line=>{const value=line.trim();if(!value)return [];if(value.startsWith("# ")){section=value.slice(2).trim();return [];}return [{title:value.replace(/^[-*] (?:\[ \] )?/,""),section}];});}
@@ -13,11 +14,6 @@ export function parseChecklist(text:string){let section="";return text.split("\n
 /** Still on the list: not removed, and not archived away as history. Reorder and the "N done" line count only these. */
 const onList=(item:Task)=>!item.archived&&item.status!=="cancelled";
 export const isOpenItem=(item:Task)=>onList(item)&&item.status!=="completed";
-
-/** Pins or unpins a quick list on this person's own Today. Pins are per person, so a viewer can pin too. */
-function pinList(id:string,pinned:boolean){
- return post<{data:{pinned:boolean}}>("/today/pins",{command_id:commandId(),target_id:id,pinned}).then(result=>result.data.pinned);
-}
 
 /** A list that just finished, with the command that brings it back: the item checked last, or every item finished with it. */
 export type FinishedList={id:string;title:string;undo:()=>Promise<unknown>;
@@ -145,7 +141,7 @@ export function useQuickList(id:string,{snapshot,remember=false,onChanged,onFini
    build:list=>["task.complete",{task_id:id,expected_revision:list.revision,...(openItemIds?{complete_open_items:true,open_item_ids:openItemIds}:{})}],
    undo:result=>["task.reopen",{task_id:id,expected_revision:result.revision,item_ids:result.completed_item_ids??[]}],
   }),
-  pin:(pinned:boolean)=>pinList(id,pinned).then(value=>{const current=savedRef.current;if(current)adopt({...current,pinned:value},true);return value;},e=>{setError((e as Error).message);throw e;}),
+  pin:(pinned:boolean)=>pinToToday(id,pinned).then(value=>{const current=savedRef.current;if(current)adopt({...current,pinned:value},true);return value;},e=>{setError((e as Error).message);throw e;}),
  };
 }
 

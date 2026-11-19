@@ -1,6 +1,7 @@
 import {useEffect,useState} from "react";
-import {ChevronRight,FolderOpen,Info,Plus} from "lucide-react";
+import {ChevronRight,FolderOpen,Info,Pin,PinOff,Plus} from "lucide-react";
 import {api} from "./api";
+import {pinToToday,readPins} from "./today-pins";
 import {SourceBadge} from "./SourceDetails";
 import {openTarget,type CustomRecord,type Schema} from "./structure-types";
 import {StartFromTemplateDialog,useTemplates,useUndoToast} from "./Templates";
@@ -22,6 +23,11 @@ export function OrganizationBrowse({schema,parent,section,onSection,query,archiv
   void api<Page>("/structure/browse?"+p).then(v=>{if(live){setPage(v);onVisible?.(v.items.filter(r=>!r.context_only).map(r=>r.task_id??r.id));}}).catch(e=>live&&setError(e.message)).finally(()=>live&&setBusy(false));
   return()=>{live=false;};
  },[parent,section,query,archived,status,offset,refresh]);
+ // A project open here can be kept on this person's Today. Pins are per person, so viewers can pin too.
+ const pinnable=page?.parent&&page.parent.type_id==="project"&&!page.parent.archived&&!page.parent.context_only?page.parent.id:null;
+ const [pinned,setPinned]=useState<boolean|null>(null),[pinning,setPinning]=useState(false);
+ useEffect(()=>{let live=true;setPinned(null);if(pinnable)void readPins().then(pins=>{if(live)setPinned(pins.some(p=>p.kind==="project"&&p.target_id===pinnable));}).catch(e=>live&&setError(e.message));return()=>{live=false;};},[pinnable,refresh]);
+ const pin=(value:boolean)=>{if(!pinnable)return;setPinning(true);setError("");void pinToToday(pinnable,value).then(setPinned,e=>setError(e.message)).finally(()=>setPinning(false));};
  const types=schema.types.filter(t=>!t.archived&&(!page?.parent||t.parent_types.includes(page.parent.type_id)));
  const selected=types.find(t=>t.id===kind)??types.find(t=>t.id==="task")??types[0];
  const children=page?.items??[];
@@ -34,6 +40,7 @@ export function OrganizationBrowse({schema,parent,section,onSection,query,archiv
    <p>{page?.parent?.body||(!parent?"Open a group to find the work and notes that live there.":"Direct contents of this home. Extra links live under Related.")}</p>
    {!!page?.parent?.contents?.work_total&&<div className="org-progress"><span className="chip">{page.parent.contents.work_done}/{page.parent.contents.work_total} complete</span>{page.parent.contents.ready_to_complete&&<span className="chip chip-done">Ready for your final check</span>}</div>}</div>
    {page?.parent&&!page.parent.context_only&&<button className="btn btn-sm" onClick={()=>onOpen(page.parent!)}><Info size={15}/>Details</button>}
+   {pinnable&&pinned!==null&&<button className="btn btn-sm" disabled={pinning} onClick={()=>pin(!pinned)}>{pinned?<><PinOff size={15}/>Unpin from Today</>:<><Pin size={15}/>Pin to Today</>}</button>}
    {canEdit&&!archived&&<button className="btn btn-soft btn-sm" onClick={()=>setAdding(v=>!v)}><Plus size={15}/>Add here</button>}
   </div>
   <div className="org-tabs" role="group" aria-label="Container contents">{(parent?[["groups","Groups"],["work","Tasks"],["content","Notes"],["related","Related"],["all","All contents"]]:[["groups","Groups"],["all","Unfiled"]]).map(([id,label])=>

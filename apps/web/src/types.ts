@@ -66,16 +66,31 @@ export interface QuickList extends Task {
   /** Pinned to Today by the person reading it. */
   pinned?: boolean;
 }
-/** One box on Today (GET /today/boxes): a quick list pinned by this person, or one whose date has come. */
-export interface TodayBoxData {
-  kind: "quick_list";
+/** What every box on Today (GET /today/boxes) has: its kind, its target and why it shows. */
+interface TodayBoxBase {
   target_id: string;
   reason: "pinned" | "dated";
   pinned: boolean;
   /** The due or do date that brought a dated box to Today; null for a pinned box. */
   date: string | null;
+  title: string;
+}
+/** A quick list pinned by this person, or one whose date has come. */
+export interface QuickListBoxData extends TodayBoxBase {
+  kind: "quick_list";
   list: QuickList;
 }
+/** A project pinned by this person: its open tasks due or planned by today. */
+export interface ProjectBoxData extends TodayBoxBase {
+  kind: "project";
+  /** Up to 50 of them, in Due and overdue's order. */
+  tasks: Task[];
+  /** Every such task, including any beyond `tasks`. */
+  total: number;
+  /** The task.create arguments that file a new task in this project; null when it cannot take one. */
+  add: { parent_task_id: string } | { project_id: string } | null;
+}
+export type TodayBoxData = QuickListBoxData | ProjectBoxData;
 export interface Project {
   space_id?: string | null;
   area_id?: string | null;

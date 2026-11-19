@@ -4,8 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QuickListDetail, type FinishedList } from "./QuickLists";
-import { TodayBox, TodayBoxes } from "./TodayBox";
-import type { QuickList, Task, TodayBoxData } from "./types";
+import { ProjectBox, TodayBox, TodayBoxes } from "./TodayBox";
+import type { ProjectBoxData, QuickList, QuickListBoxData, Task } from "./types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const TODAY = "2026-11-18";
@@ -16,8 +16,10 @@ const quickList = (items: Task[], extra: Partial<QuickList> = {}) => ({
   id: "L", title: "Groceries", status: "open", revision: 5, archived: false, is_quick_list: true, due_date: null, planned_date: null, items,
   done: items.filter(i => i.status === "completed").length, total: items.filter(i => i.status !== "cancelled").length, ...extra,
 }) as QuickList;
-const pinnedBox = (list: QuickList, extra: Partial<TodayBoxData> = {}): TodayBoxData =>
-  ({ kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, list, ...extra });
+const pinnedBox = (list: QuickList, extra: Partial<QuickListBoxData> = {}): QuickListBoxData =>
+  ({ kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, title: list.title, list, ...extra });
+/** What Today hands the boxes for project boxes; these tests have none. */
+const noProjects = { row: () => null, tasks: [], onOpenProject: () => {} };
 
 type Reply = { status: number; body: unknown };
 type Call = { method: string; url: string; body: Record<string, unknown> & { tool?: string; arguments?: Record<string, unknown> } };
@@ -62,7 +64,7 @@ async function menu(choice: string) {
   if (!entry) throw Error("No menu entry " + choice);
   await act(async () => entry.click());
 }
-const box = (data: TodayBoxData, extra: { canEdit?: boolean; onChanged?: () => void; onFinished?: (f: FinishedList) => void } = {}) =>
+const box = (data: QuickListBoxData, extra: { canEdit?: boolean; onChanged?: () => void; onFinished?: (f: FinishedList) => void } = {}) =>
   <TodayBox box={data} today={TODAY} canEdit={extra.canEdit ?? true} onOpen={() => {}} onChanged={extra.onChanged ?? (() => {})} onFinished={extra.onFinished ?? (() => {})}/>;
 
 describe("a quick list's box on Today", () => {
@@ -379,7 +381,7 @@ describe("a quick list's box on Today", () => {
 describe("starting a list on Today", () => {
   it("opens a form in place; saving closes it and shows the new box with focus in its add field, and no dialog", async () => {
     const onChanged = vi.fn();
-    await render(<TodayBoxes boxes={[]} today={TODAY} canEdit onOpen={() => {}} onChanged={onChanged} onFinished={() => {}}/>);
+    await render(<TodayBoxes boxes={[]} today={TODAY} canEdit onOpen={() => {}} onChanged={onChanged} onFinished={() => {}} {...noProjects}/>);
     await act(async () => button("Start a list")!.click());
     const title = byLabel<HTMLInputElement>("List title"), items = byLabel<HTMLTextAreaElement>("Items");
     const save = button("Start list")!;
@@ -401,12 +403,88 @@ describe("starting a list on Today", () => {
     expect(onChanged).toHaveBeenCalled();
     // When Today's boxes include it, it shows once.
     const created = quickList([item("s", "Socks")], { id: "N", title: "Packing" });
-    await render(<TodayBoxes boxes={[pinnedBox(created)]} today={TODAY} canEdit onOpen={() => {}} onChanged={onChanged} onFinished={() => {}}/>);
+    await render(<TodayBoxes boxes={[pinnedBox(created)]} today={TODAY} canEdit onOpen={() => {}} onChanged={onChanged} onFinished={() => {}} {...noProjects}/>);
     expect(host.querySelectorAll("h2")).toHaveLength(1);
   });
 
   it("offers no Start a list control to a viewer", async () => {
-    await render(<TodayBoxes boxes={[]} today={TODAY} canEdit={false} onOpen={() => {}} onChanged={() => {}} onFinished={() => {}}/>);
+    await render(<TodayBoxes boxes={[]} today={TODAY} canEdit={false} onOpen={() => {}} onChanged={() => {}} onFinished={() => {}} {...noProjects}/>);
     expect(button("Start a list")).toBeUndefined();
+  });
+});
+
+describe("a project's box on Today", () => {
+  const work = (id: string, title: string, extra: Partial<Task> = {}) =>
+    ({ id, title, status: "open", revision: 1, archived: false, due_date: TODAY, planned_date: null, ...extra }) as Task;
+  const projectBox = (tasks: Task[], extra: Partial<ProjectBoxData> = {}): ProjectBoxData => ({
+    kind: "project", target_id: "P", reason: "pinned", pinned: true, date: null, title: "Eridani", tasks, total: tasks.length,
+    add: { parent_task_id: "PT" }, ...extra });
+  // Today hands each project task its own Due and overdue row; this stands in for it.
+  const row = (task: Task) => <li key={task.id} className="row today-row"><button className="row-title">{task.title}</button></li>;
+  const rows = () => [...host.querySelectorAll<HTMLElement>(".today-rows .row-title")].map(e => e.textContent);
+  const project = (data: ProjectBoxData, extra: { canEdit?: boolean; tasks?: Task[]; onChanged?: () => void; onOpenProject?: (id: string) => void } = {}) =>
+    <ProjectBox box={data} today={TODAY} canEdit={extra.canEdit ?? true} row={row} tasks={extra.tasks ?? []}
+      onOpenProject={extra.onOpenProject ?? (() => {})} onChanged={extra.onChanged ?? (() => {})}/>;
+
+  it("shows the project's tasks as Today rows, and Nothing due today when it has none", async () => {
+    await render(project(projectBox([work("a", "Ship the release"), work("b", "Fix the voice toggle")])));
+    expect(host.querySelector("h2")?.textContent).toBe("Eridani");
+    expect(host.querySelector(".panel-count")?.textContent).toBe("2");
+    expect(rows()).toEqual(["Ship the release", "Fix the voice toggle"]);
+    await render(project(projectBox([])));
+    expect(rows()).toEqual([]);
+    expect(host.querySelector(".box-state")?.textContent).toBe("Nothing due today.");
+    expect(host.querySelector(".panel-count")).toBeNull();
+    // An empty project box keeps its add field.
+    expect(byLabel("Add to Eridani")).not.toBeNull();
+  });
+
+  it("adds a task filed in the project and planned for today, then reads the boxes again", async () => {
+    const onChanged = vi.fn();
+    serve = () => done(work("n", "Fix the voice toggle", { due_date: null, planned_date: TODAY }));
+    await render(project(projectBox([]), { onChanged }));
+    const field = byLabel<HTMLInputElement>("Add to Eridani");
+    await act(async () => type(field, "Fix the voice toggle"));
+    await act(async () => field.form!.requestSubmit());
+    await flush();
+    expect(commands()).toEqual([{ tool: "task.create", arguments: { title: "Fix the voice toggle", parent_task_id: "PT", planned_date: TODAY } }]);
+    expect(field.value).toBe("");
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a task the moment it is finished anywhere, such as in Due and overdue", async () => {
+    const release = work("a", "Ship the release");
+    await render(project(projectBox([release, work("b", "Write notes")]), { tasks: [{ ...release, status: "completed" }] }));
+    expect(rows()).toEqual(["Write notes"]);
+    expect(host.querySelector(".panel-count")?.textContent).toBe("1");
+  });
+
+  it("opens the project from its title and menu, and offers the rest when it has more than it shows", async () => {
+    const onOpenProject = vi.fn();
+    await render(project(projectBox([work("a", "Ship the release")], { total: 53 }), { onOpenProject }));
+    expect(host.querySelector(".panel-count")?.textContent).toBe("53");
+    await act(async () => button("Eridani")!.click());
+    await act(async () => button("52 more in Eridani")!.click());
+    await act(async () => byLabel("Options for Eridani").click());
+    await act(async () => button("Open project")!.click());
+    expect(onOpenProject.mock.calls).toEqual([["P"], ["P"], ["P"]]);
+  });
+
+  it("lets a viewer unpin it but not add to it", async () => {
+    const onChanged = vi.fn();
+    serve = () => done({ kind: "project", target_id: "P", pinned: false, on_today: false, reason: null });
+    await render(project(projectBox([work("a", "Ship the release")]), { canEdit: false, onChanged }));
+    expect(host.querySelector("input")).toBeNull();
+    await act(async () => byLabel("Options for Eridani").click());
+    await act(async () => button("Unpin from Today")!.click());
+    await flush();
+    expect(calls.map(c => [c.method, c.url, c.body.target_id, c.body.pinned])).toEqual([["POST", "/api/v1/today/pins", "P", false]]);
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("sits among the quick-list boxes in Today's order", async () => {
+    await render(<TodayBoxes boxes={[pinnedBox(quickList([item("a", "Milk")])), projectBox([work("b", "Ship the release")])]}
+      today={TODAY} canEdit onOpen={() => {}} onChanged={() => {}} onFinished={() => {}} row={row} tasks={[]} onOpenProject={() => {}}/>);
+    expect([...host.querySelectorAll(".today-box h2")].map(e => e.textContent)).toEqual(["Groceries", "Eridani"]);
   });
 });

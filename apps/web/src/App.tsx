@@ -2843,6 +2843,7 @@ export default function App() {
               onEntry={openCalendarEntry} onNote={id => void openNote(id)}
               boxes={boxes} boxesError={boxesError} onOpenList={openTaskCard} onBoxesChanged={readBoxes}
               onListFinished={finished => { listFinish.finished(finished); readBoxes(); }}
+              onOpenProject={id => { setView("organize"); setOrganizationEditor(null); setRecordControl({ nonce: crypto.randomUUID(), parent_id: id, layout: "browse", section: "work" }); }}
               onNavigate={target => { setQuery(""); if (target === "tasks-today") { setTodayList(true); } else setView(target); }}/>}
             {view === "reminders" && (
               <div className="view-control-row">

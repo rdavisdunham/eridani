@@ -1,11 +1,13 @@
-import { useEffect, useId, useRef, useState } from "react";
-import { CircleCheck, Ellipsis, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { CircleCheck, Ellipsis, FolderKanban, FolderOpen, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
 import { ApiError } from "./api";
 import { doLabel } from "./date-picks";
 import { heldFocus, listRefusal, uncheckedCount } from "./list-finish";
 import { QuickListBody, isOpenItem, parseChecklist, useQuickList, type FinishedList } from "./QuickLists";
 import { useStructureActions } from "./structure-actions";
-import type { QuickList, TodayBoxData } from "./types";
+import { isFinishedTask } from "./task-finished";
+import { pinToToday } from "./today-pins";
+import type { ProjectBoxData, QuickList, QuickListBoxData, Task, TodayBoxData } from "./types";
 import { Popover } from "./ux";
 import { shortDate } from "./work-views";
 import "./today.css";
@@ -27,7 +29,7 @@ function dateLabel(date: string, list: QuickList, today: string) {
 
 /** One quick list on Today: its open items, an add field, the checked items folded into "N done", and a menu. */
 export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChanged, onFinished }: BoxActions & {
-  box: TodayBoxData; today: string; canEdit: boolean;
+  box: QuickListBoxData; today: string; canEdit: boolean;
   /** A list just started here: bring the box into view with its add field focused. */
   focusAdd?: boolean;
 }) {
@@ -95,6 +97,60 @@ export function TodayBox({ box, today, canEdit, focusAdd = false, onOpen, onChan
   </section>;
 }
 
+type ProjectActions = {
+  /** One of a project's tasks as a Today row, the same row Due and overdue shows. */
+  row: (task: Task) => ReactNode;
+  /** The workspace's current tasks: a task checked or changed since the boxes were read shows that way at once. */
+  tasks: Task[];
+  /** Opens the project in Organize. */
+  onOpenProject: (id: string) => void;
+};
+
+/** A project kept on Today: its open tasks due or planned by today, and a field that adds one for today. */
+export function ProjectBox({ box, today, canEdit, row, tasks, onOpenProject, onChanged }: ProjectActions & {
+  box: ProjectBoxData; today: string; canEdit: boolean; onChanged: () => void;
+}) {
+  const heading = useId();
+  const [title, setTitle] = useState(""), [pinning, setPinning] = useState(false), [pinError, setPinError] = useState("");
+  const { run, busy, error } = useStructureActions();
+  const current = new Map(tasks.map(task => [task.id, task]));
+  // The workspace's copy wins, so a task checked here or in Due and overdue leaves both at once.
+  const shown = box.tasks.map(task => current.get(task.id) ?? task).filter(task => !task.archived && !isFinishedTask(task));
+  const more = box.total - box.tasks.length, count = shown.length + more;
+  const open = () => onOpenProject(box.target_id);
+  const unpin = () => {
+    setPinning(true); setPinError("");
+    void pinToToday(box.target_id, false).then(onChanged, e => setPinError((e as Error).message)).finally(() => setPinning(false));
+  };
+  const add = (e: FormEvent) => {
+    e.preventDefault();
+    const text = title.trim();
+    if (!text || !box.add) return;
+    // Filed in the project and planned for today, the same as adding it in the project.
+    void run("task.create", { title: text, ...box.add, planned_date: today }).then(() => { setTitle(""); onChanged(); }, () => {});
+  };
+  return <section className="panel today-box" aria-labelledby={heading}>
+    <header className="panel-header">
+      <h2 id={heading}><button type="button" className="box-link" onClick={open}><FolderKanban aria-hidden="true" />{box.title}</button></h2>
+      {!!count && <span className="panel-count">{count}</span>}
+      <Popover floating label={"Options for " + box.title} className="panel-action" panelClassName="menu-popover"
+        buttonClassName="btn btn-ghost btn-sm btn-icon" button={<Ellipsis size={18} aria-hidden="true" />}>
+        {close => <div className="menu-list">
+          <button type="button" className="menu-item" disabled={pinning} onClick={() => { close(); unpin(); }}><PinOff size={16} aria-hidden="true" />Unpin from Today</button>
+          <button type="button" className="menu-item" onClick={() => { close(); open(); }}><FolderOpen size={16} aria-hidden="true" />Open project</button>
+        </div>}
+      </Popover>
+    </header>
+    {(error || pinError) && <p className="today-error" role="alert">{error || pinError}</p>}
+    {shown.length ? <ul className="today-rows">{shown.map(task => row(task))}</ul> : <p className="box-state">Nothing due today.</p>}
+    {more > 0 && <button type="button" className="btn btn-ghost btn-sm box-more" onClick={open}>{more} more in {box.title}</button>}
+    {canEdit && box.add && <form className="box-add" onSubmit={add}>
+      <input aria-label={"Add to " + box.title} placeholder="Add a task for today…" maxLength={500} value={title} onChange={e => setTitle(e.target.value)} />
+      <button className="btn btn-soft btn-sm" disabled={busy || !title.trim()}>Add</button>
+    </form>}
+  </section>;
+}
+
 /** The title-and-items form that starts a list right on Today. An empty list is fine; it holds up to 100 items. */
 function StartList({ onStarted }: { onStarted: (list: QuickList) => void }) {
   const [open, setOpen] = useState(false), [title, setTitle] = useState(""), [text, setText] = useState("");
@@ -126,10 +182,10 @@ function StartList({ onStarted }: { onStarted: (list: QuickList) => void }) {
 }
 
 /**
- * Today's boxes in order, then the control that starts a new list. A list started here shows at once, before
- * Today's next read of its boxes includes it.
+ * Today's boxes in order, quick lists and projects, then the control that starts a new list. A list started here
+ * shows at once, before Today's next read of its boxes includes it.
  */
-export function TodayBoxes({ boxes, today, canEdit, onOpen, onChanged, onFinished }: BoxActions & {
+export function TodayBoxes({ boxes, today, canEdit, onOpen, onChanged, onFinished, ...project }: BoxActions & ProjectActions & {
   boxes: TodayBoxData[] | null; today: string; canEdit: boolean;
 }) {
   const [started, setStarted] = useState<QuickList[]>([]), [focus, setFocus] = useState<string | null>(null);
@@ -137,10 +193,12 @@ export function TodayBoxes({ boxes, today, canEdit, onOpen, onChanged, onFinishe
   useEffect(() => { setStarted(lists => lists.some(list => known.has(list.id)) ? lists.filter(list => !known.has(list.id)) : lists); }, [boxes]);
   const drop = (id: string) => setStarted(lists => lists.filter(list => list.id !== id));
   const shown = [...read, ...started.filter(list => !known.has(list.id))
-    .map((list): TodayBoxData => ({ kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, list }))];
+    .map((list): TodayBoxData => ({ kind: "quick_list", target_id: list.id, reason: "pinned", pinned: true, date: null, title: list.title, list }))];
   return <>
-    {shown.map(box => <TodayBox key={box.target_id} box={box} today={today} canEdit={canEdit} focusAdd={focus === box.target_id} onOpen={onOpen}
-      onChanged={() => { drop(box.target_id); onChanged(); }} onFinished={finished => { drop(box.target_id); onFinished(finished); }} />)}
+    {shown.map(box => box.kind === "project"
+      ? <ProjectBox key={box.target_id} box={box} today={today} canEdit={canEdit} onChanged={onChanged} {...project} />
+      : <TodayBox key={box.target_id} box={box} today={today} canEdit={canEdit} focusAdd={focus === box.target_id} onOpen={onOpen}
+        onChanged={() => { drop(box.target_id); onChanged(); }} onFinished={finished => { drop(box.target_id); onFinished(finished); }} />)}
     {canEdit && <StartList onStarted={list => {
       if (list.pinned !== false) { setStarted(lists => [...lists, list]); setFocus(list.id); }
       onChanged();

@@ -417,6 +417,15 @@ def today_boxes(user: User, day: date | None = None):
         return {"boxes": boxes(db, user.owner_id, user.account_id or user.owner_id, day)}
 
 
+@app.get("/api/v1/today/pins")
+def today_pins(user: User):
+    """This person's pins in Today's order, including targets that show no box today, such as a finished list."""
+    from .today import pins
+    with session_scope() as db:
+        return {"pins": [{"kind": p.kind, "target_id": p.target_id, "pinned_at": p.pinned_at}
+                         for p in pins(db, user.owner_id, user.account_id or user.owner_id)]}
+
+
 @app.post("/api/v1/today/pins")
 def today_pin(body: PinInput, user: User):
     """A pin changes only this person's Today, so viewers may pin too (access.request_access)."""

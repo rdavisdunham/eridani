@@ -42,7 +42,6 @@ type Props = {
   /** A pin changed or a list was started on Today: read the boxes again. */
   onBoxesChanged: () => void;
   onListFinished: (finished: FinishedList) => void;
-  /** Opens a pinned project in Organize. */
   onOpenProject: (id: string) => void;
 };
 

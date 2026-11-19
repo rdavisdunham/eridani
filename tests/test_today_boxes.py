@@ -251,7 +251,7 @@ def pin_project(record, pinned=True):
     return run("today.pin", {"target_id": record["id"], "pinned": pinned})
 
 
-def test_a_project_box_lists_the_open_tasks_in_its_home_due_or_planned_by_today():
+def test_a_project_box_lists_the_open_tasks_in_its_home_due_or_planned_by_today(monkeypatch):
     eridani, remotea = home("Eridani"), home("Remotea")
     task("Overdue fix", eridani, due_date=(DAY - timedelta(days=3)).isoformat())
     task("Slipped plan", eridani, planned_date=(DAY - timedelta(days=1)).isoformat())
@@ -277,9 +277,12 @@ def test_a_project_box_lists_the_open_tasks_in_its_home_due_or_planned_by_today(
     assert {k: box[k] for k in ("kind", "target_id", "reason", "pinned", "date", "title", "total")} == {
         "kind": "project", "target_id": eridani["id"], "reason": "pinned", "pinned": True, "date": None,
         "title": "Eridani", "total": 4}
-    # Due and overdue's own order: by date, then time, priority and title.
+    # Due and overdue's own order: earliest date first, then title.
     assert shown(eridani["id"]) == ["Overdue fix", "Slipped plan", "Due today", "Nested step"]
     assert project_box(remotea["id"]) is None
+    # A full box shows its first tasks, and its total still counts them all.
+    monkeypatch.setattr(today, "PROJECT_TASKS", 2)
+    assert (shown(eridani["id"]), project_box(eridani["id"])["total"]) == (["Overdue fix", "Slipped plan"], 4)
 
 
 def test_a_task_in_a_project_box_is_still_due_and_finishing_it_once_clears_both():
@@ -287,7 +290,7 @@ def test_a_task_in_a_project_box_is_still_due_and_finishing_it_once_clears_both(
     pin_project(eridani)
     due = task("Ship the release", eridani, due_date=DAY.isoformat())
     assert shown(eridani["id"]) == ["Ship the release"]
-    # Due and overdue keeps listing every open task due by today; the box is a second view of the same task.
+    # The box is a second view of the same task: it stays open and due, so Due and overdue keeps it too.
     with session_scope() as db:
         row = db.get(Task, due["id"])
         assert row.status == "open" and row.due_date <= DAY
@@ -331,6 +334,15 @@ def test_a_linear_issue_filed_under_the_project_shows_in_its_box():
     with session_scope() as db:
         assert move(db, OWNER, ensure(db, OWNER), for_task(db, OWNER, issue["id"]), eridani["id"])
     assert shown(eridani["id"]) == ["Voice toggle sticks"]
+
+
+def test_an_imported_project_with_no_task_of_its_own_adds_by_its_project_id():
+    from test_structure import definition
+
+    legacy = run("project.create", {"name": "Beacon"})
+    definition()
+    pin_project(legacy)
+    assert project_box(legacy["id"])["add"] == {"project_id": legacy["id"]}
 
 
 def test_a_pinned_project_with_nothing_due_keeps_an_empty_box():

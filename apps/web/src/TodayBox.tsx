@@ -1,11 +1,11 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { CircleCheck, Ellipsis, FolderKanban, FolderOpen, ListChecks, ListPlus, Pin, PinOff } from "lucide-react";
 import { ApiError } from "./api";
 import { doLabel } from "./date-picks";
 import { heldFocus, listRefusal, uncheckedCount } from "./list-finish";
 import { QuickListBody, isOpenItem, parseChecklist, useQuickList, type FinishedList } from "./QuickLists";
 import { useStructureActions } from "./structure-actions";
-import { isFinishedTask } from "./task-finished";
+import { live } from "./today-counts";
 import { pinToToday } from "./today-pins";
 import type { ProjectBoxData, QuickList, QuickListBoxData, Task, TodayBoxData } from "./types";
 import { Popover } from "./ux";
@@ -113,9 +113,9 @@ export function ProjectBox({ box, today, canEdit, row, tasks, onOpenProject, onC
   const heading = useId();
   const [title, setTitle] = useState(""), [pinning, setPinning] = useState(false), [pinError, setPinError] = useState("");
   const { run, busy, error } = useStructureActions();
-  const current = new Map(tasks.map(task => [task.id, task]));
+  const current = useMemo(() => new Map(tasks.map(task => [task.id, task])), [tasks]);
   // The workspace's copy wins, so a task checked here or in Due and overdue leaves both at once.
-  const shown = box.tasks.map(task => current.get(task.id) ?? task).filter(task => !task.archived && !isFinishedTask(task));
+  const shown = box.tasks.map(task => current.get(task.id) ?? task).filter(live);
   const more = box.total - box.tasks.length, count = shown.length + more;
   const open = () => onOpenProject(box.target_id);
   const unpin = () => {
@@ -126,7 +126,6 @@ export function ProjectBox({ box, today, canEdit, row, tasks, onOpenProject, onC
     e.preventDefault();
     const text = title.trim();
     if (!text || !box.add) return;
-    // Filed in the project and planned for today, the same as adding it in the project.
     void run("task.create", { title: text, ...box.add, planned_date: today }).then(() => { setTitle(""); onChanged(); }, () => {});
   };
   return <section className="panel today-box" aria-labelledby={heading}>

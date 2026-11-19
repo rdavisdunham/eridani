@@ -288,7 +288,6 @@ PROBES.update(
             ],
             "mentions": {"grocer": 3, "hardware": 2},
         },
-        # A task added to a project for today is filed under that project's home, as its Today box adds it.
         "quick_capture.31": {
             "message": "Add fix the speaker toggle to Transcript Lens for today.",
             "create": {"title": "Fix the speaker toggle", "status": "open", "planned_date": "2030-01-14"},

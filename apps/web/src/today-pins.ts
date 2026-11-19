@@ -1,7 +1,8 @@
 import { api, commandId, post } from "./api";
+import type { TodayBoxData } from "./types";
 
-/** One box kept on this person's Today: a quick list (its task ID) or a project (its home record's ID). */
-export type TodayPin = { kind: "quick_list" | "project"; target_id: string; pinned_at: string };
+/** One of this person's pins: a quick list (its task ID) or a project (its home record's ID). It has a box only while its target is open. */
+export type TodayPin = { kind: TodayBoxData["kind"]; target_id: string; pinned_at: string };
 
 /** Pins or unpins a box on this person's own Today. Pins are per person, so a viewer can pin too. */
 export function pinToToday(id: string, pinned: boolean) {

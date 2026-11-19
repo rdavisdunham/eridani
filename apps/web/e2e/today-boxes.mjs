@@ -26,7 +26,7 @@ try{
  await expect(box.getByRole("button",{name:"Complete Write the changelog",exact:true})).toBeVisible();
  const added=(await request("/tasks?limit=200")).items.find(t=>t.title==="Write the changelog");
  expect([added.parent_task_id,added.planned_date]).toEqual([project.task_id,today]);
- // Finishing it in Due and overdue finishes it in the box too.
+ // Finishing the project's task from Due and overdue takes it out of the box too.
  await due.getByRole("button",{name:"Complete Ship launch notes",exact:true}).click();await expect(box.getByRole("button",{name:"Complete Ship launch notes",exact:true})).toHaveCount(0);
  for(const width of [390,1280]){await page.setViewportSize({width,height:900});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBeTruthy();mkdirSync("../../artifacts/today-boxes",{recursive:true});await box.screenshot({path:`../../artifacts/today-boxes/project-box-${width}.png`});}
  // The box's title opens the project; unpinning it there takes the box off Today.

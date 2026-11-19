@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import aliased, object_session
 
-from .domain import DomainError, emit
+from .domain import DomainError, emit, owned
 from .models import Project, Task, TodayPin, now
 from .structure_models import StructureRecord
 
@@ -78,13 +78,10 @@ def target(db, owner, identity):
     task = db.scalar(select(Task).where(Task.id == identity, Task.owner_id == owner))
     if task and task.is_quick_list:
         return QUICK_LIST, task
-    home = for_task(db, owner, task.id) if task else db.scalar(
-        select(StructureRecord).where(StructureRecord.id == identity, StructureRecord.owner_id == owner))
+    home = for_task(db, owner, task.id) if task else owned(db, StructureRecord, identity, owner)
     if home and home.type_id == PROJECT:
         return PROJECT, home
-    if task or home:
-        raise DomainError("NOT_PINNABLE", "Only quick lists and projects can be pinned to Today.", 409)
-    raise DomainError("NOT_FOUND", "That record is no longer available.", 404)
+    raise DomainError("NOT_PINNABLE", "Only quick lists and projects can be pinned to Today.", 409)
 
 
 def change_pin(db, owner, args):
@@ -109,6 +106,12 @@ def pin_receipt(data):
     return isinstance(data, dict) and data.keys() == {"kind", "target_id", "pinned", "on_today", "reason"}
 
 
+def box(kind, row, why="pinned", since=None, **content):
+    """The fields every box has, then what its kind shows."""
+    return {"kind": kind, "target_id": row.id, "reason": why, "pinned": why == "pinned",
+            "date": since.isoformat() if since else None, "title": row.title, **content}
+
+
 def project_box(db, owner, home, day):
     """A pinned project's box: its open tasks due or planned by `day`, the rule Due and overdue uses, so a task here
     is in Due too. Quick-list items are left out; their lists have boxes of their own. `add` holds the task.create
@@ -121,17 +124,22 @@ def project_box(db, owner, home, day):
     due = (Task.owner_id == owner, Task.archived.is_(False), Task.is_template.is_(False), Task.status.not_in(FINISHED),
            or_(Task.due_date <= day, Task.planned_date <= day), under_home(owner, home.id),
            ~select(parent.id).where(parent.id == Task.parent_task_id, parent.is_quick_list.is_(True)).exists())
-    rows = list(db.scalars(select(Task).where(*due).order_by(
+    matched = db.execute(select(Task).where(*due).add_columns(func.count().over()).order_by(
         func.coalesce(Task.due_date, Task.planned_date), Task.due_time.nulls_last(), Task.priority.desc(), Task.title,
-        Task.id).limit(PROJECT_TASKS)))
-    total = len(rows) if len(rows) < PROJECT_TASKS else db.scalar(select(func.count(Task.id)).where(*due))
-    origin = sources(db, owner, rows)
+        Task.id).limit(PROJECT_TASKS)).all()
+    rows = [row for row, _ in matched]
+    total = matched[0][1] if matched else 0
+    origin = sources(db, owner, rows) if rows else {}
+    # serial() looks up each task's parent. The session keeps only rows something holds, so `held` keeps the
+    # parents from one read until the tasks are serialized, instead of one query per task.
+    parents = {row.parent_task_id for row in rows if row.parent_task_id}
+    held = list(db.scalars(select(Task).where(Task.id.in_(parents)))) if parents else []
     # Imported projects can lack the task that Organize gives each project; their tasks file by the older project ID.
     add = ({"parent_task_id": home.task_id} if home.task_id
            else {"project_id": home.id} if db.get(Project, home.id) else None)
-    return {"kind": PROJECT, "target_id": home.id, "reason": "pinned", "pinned": True, "date": None,
-            "title": home.title, "tasks": [serial(row, source=origin[row.id]) for row in rows], "total": total,
-            "add": add}
+    tasks = [serial(row, source=origin[row.id]) for row in rows]
+    del held
+    return box(PROJECT, home, tasks=tasks, total=total, add=add)
 
 
 def boxes(db, owner, account, day=None):
@@ -150,14 +158,12 @@ def boxes(db, owner, account, day=None):
     lists = {row.id: row for row in db.scalars(select(Task).where(
         Task.owner_id == owner, Task.is_quick_list.is_(True), Task.archived.is_(False), Task.status.not_in(FINISHED),
         or_(Task.id.in_(listed), Task.due_date <= day, Task.planned_date <= day)))}
+    projects = [p.target_id for p in mine if p.kind == PROJECT]
     homes = {row.id: row for row in db.scalars(select(StructureRecord).where(
-        StructureRecord.owner_id == owner, StructureRecord.id.in_([p.target_id for p in mine if p.kind == PROJECT])))}
+        StructureRecord.owner_id == owner, StructureRecord.id.in_(projects)))} if projects else {}
 
     def list_box(row, why, since=None):
-        own = why == "pinned"
-        return {"kind": QUICK_LIST, "target_id": row.id, "reason": why, "pinned": own,
-                "date": since.isoformat() if since else None, "title": row.title,
-                "list": read(db, owner, row.id, account, pinned=own, row=row)}
+        return box(QUICK_LIST, row, why, since, list=read(db, owner, row.id, account, pinned=why == "pinned", row=row))
 
     def pinned_box(p):
         if p.kind == QUICK_LIST and p.target_id in lists:

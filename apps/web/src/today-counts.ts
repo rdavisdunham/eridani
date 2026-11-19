@@ -3,7 +3,7 @@ import { scheduledBy } from "./productivity";
 import { finishedBySync, finishedToday, isFinishedTask } from "./task-finished";
 
 /** Not finished, archived or a template. */
-const live = (t: Task) => !t.archived && !t.is_template && !isFinishedTask(t);
+export const live = (t: Task) => !t.archived && !t.is_template && !isFinishedTask(t);
 /** Open work of its own: live, and not an item inside a quick list. */
 const isOpen = (t: Task) => live(t) && !t.quick_list_parent_id;
 

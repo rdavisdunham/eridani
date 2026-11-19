@@ -66,7 +66,7 @@ export interface QuickList extends Task {
   /** Pinned to Today by the person reading it. */
   pinned?: boolean;
 }
-/** What every box on Today (GET /today/boxes) has: its kind, its target and why it shows. */
+/** What every box on Today (GET /today/boxes) has: its target and why it shows. */
 interface TodayBoxBase {
   target_id: string;
   reason: "pinned" | "dated";

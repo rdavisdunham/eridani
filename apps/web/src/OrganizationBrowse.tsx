@@ -26,7 +26,8 @@ export function OrganizationBrowse({schema,parent,section,onSection,query,archiv
  // A project open here can be kept on this person's Today. Pins are per person, so viewers can pin too.
  const pinnable=page?.parent&&page.parent.type_id==="project"&&!page.parent.archived&&!page.parent.context_only?page.parent.id:null;
  const [pinned,setPinned]=useState<boolean|null>(null),[pinning,setPinning]=useState(false);
- useEffect(()=>{let live=true;setPinned(null);if(pinnable)void readPins().then(pins=>{if(live)setPinned(pins.some(p=>p.kind==="project"&&p.target_id===pinnable));}).catch(e=>live&&setError(e.message));return()=>{live=false;};},[pinnable,refresh]);
+ useEffect(()=>setPinned(null),[pinnable]);
+ useEffect(()=>{let live=true;if(pinnable)void readPins().then(pins=>{if(live)setPinned(pins.some(p=>p.kind==="project"&&p.target_id===pinnable));}).catch(e=>live&&setError(e.message));return()=>{live=false;};},[pinnable,refresh]);
  const pin=(value:boolean)=>{if(!pinnable)return;setPinning(true);setError("");void pinToToday(pinnable,value).then(setPinned,e=>setError(e.message)).finally(()=>setPinning(false));};
  const types=schema.types.filter(t=>!t.archived&&(!page?.parent||t.parent_types.includes(page.parent.type_id)));
  const selected=types.find(t=>t.id===kind)??types.find(t=>t.id==="task")??types[0];

@@ -136,6 +136,18 @@ from `GET /api/v1/today/boxes` and sit after Due and overdue.
   lists that have a box.
 - A list holds up to 100 items; removed items and checked items already archived don't count.
 
+## Projects on Today
+
+A project can be pinned to Today too, on the same pins (`kind: "project"`, keyed on the project's home
+record). "Pin to Today" sits in the project's header in Organize (`OrganizationBrowse.tsx`, which reads
+`GET /api/v1/today/pins`); a viewer can pin. Its box (`ProjectBox` in `TodayBox.tsx`) lists the open work
+under the project that is due or planned for today or earlier, by the same rule as Due and overdue, so
+undated work stays out. It shows up to 50 tasks and an "N more in <project>" link, and its rows are the
+ordinary Today task rows. The add field files a task under the project, planned for today. The title and
+the menu's "Open project" open the project in Organize; the menu also unpins. Quick lists and projects
+share one pin order on Today. A bot key needs `organization:read` to pin a project or to see project
+boxes.
+
 ## Drift guard
 
 `apps/web/src/task-card-parity.test.tsx` renders both cards for one task (a parent, a subtask, a

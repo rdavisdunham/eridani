@@ -25,6 +25,11 @@ not deployment, model-quality acceptance or a real-device test.
   "Pin to Today" in the list and in the box menu no longer sets a do date. Lists
   pinned the old way became pins for the workspace owner once, with the date
   cleared.
+- A project can be pinned to Today from its page in Organize. Its box shows the
+  open work under it that is due or planned for today or earlier, the same work
+  Due and overdue shows, so undated work stays out. Adding in the box files a
+  task under the project for today; the title opens the project. Unpinning never
+  changes the project or its work.
 - Checking the last open item finishes the list, wherever it is checked, and its
   box leaves Today while keeping the pin. When a box or a task row finishes it, a
   toast says "Groceries is done." with Undo for six seconds, longer while Undo has
@@ -91,7 +96,10 @@ list from its Due row (asked first; Cancel changes nothing; Undo reopens the lis
 and its items) → open the full Houston list → complete Hayes item → add/reorder →
 backend edit while open → close/reopen → one summary → promotion with original IDs.
 It also exercises setup answers, preview-before-apply, confirmation, persisted
-completion and 390/892px layouts. Existing browser fixtures cover navigation, chat, notes, semantic search,
+completion and 390/892px layouts. A second fixture pins a project in Organize, checks its box on Today matches Due
+and leaves undated work out, adds a task in the box (filed under the project for
+today), completes it from Due (the box empties), checks 390/1280px layouts and
+unpins from Organize. Existing browser fixtures cover navigation, chat, notes, semantic search,
 usage, Batch B source UI and custom planner workflows. Screenshots are local
 artifacts; they do not substitute for physical Pixel Fold acceptance.
 

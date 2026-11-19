@@ -2843,6 +2843,13 @@
       "feature": "quick_capture"
     },
     {
+      "method": "GET",
+      "path": "/api/v1/today/pins",
+      "handler": "today_pins",
+      "source": "apps/api/jarvis/api.py",
+      "feature": "quick_capture"
+    },
+    {
       "method": "POST",
       "path": "/api/v1/today/pins",
       "handler": "today_pin",

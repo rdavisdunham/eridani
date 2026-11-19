@@ -35,13 +35,14 @@ type Props = {
   onEntry: (entry: CalendarEntry) => void;
   onNote: (id: string) => void;
   onNavigate: (target: "tasks-today" | "inbox" | "calendar" | "notes") => void;
-  /** This person's quick-list boxes, in order; null until they are first read. */
+  /** This person's boxes, quick lists and projects, in order; null until they are first read. */
   boxes: TodayBoxData[] | null;
   boxesError?: string;
   onOpenList: (list: QuickList) => void;
   /** A pin changed or a list was started on Today: read the boxes again. */
   onBoxesChanged: () => void;
   onListFinished: (finished: FinishedList) => void;
+  onOpenProject: (id: string) => void;
 };
 
 const eventKinds = new Set(["event", "google", "block"]);
@@ -207,7 +208,8 @@ export function Today(p: Props) {
             : <div className="empty"><span>Nothing is due. Plan a task for today above.</span><button type="button" className="btn btn-soft" onClick={() => captureRef.current?.focus()}>Add a task</button></div>}
         </section>
         {p.boxesError && <p className="today-error" role="alert">{p.boxesError}</p>}
-        <TodayBoxes boxes={p.boxes} today={p.today} canEdit={p.canEdit !== false} onOpen={p.onOpenList} onChanged={p.onBoxesChanged} onFinished={p.onListFinished}/>
+        <TodayBoxes boxes={p.boxes} today={p.today} canEdit={p.canEdit !== false} onOpen={p.onOpenList} onChanged={p.onBoxesChanged} onFinished={p.onListFinished}
+          row={task => taskRow(task, true)} tasks={p.tasks} onOpenProject={p.onOpenProject}/>
         <TodayReviews today={p.today} zone={p.zone} canEdit={p.canEdit !== false} refresh={p.tasks}/>
         <section className="panel" aria-labelledby="today-inbox-title">
           <header className="panel-header"><h2 id="today-inbox-title">Inbox</h2>{!!inbox.length && <span className="panel-count">{inbox.length}</span>}

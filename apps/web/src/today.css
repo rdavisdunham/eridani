@@ -303,13 +303,41 @@
   background: var(--violet);
 }
 
-/* ---- Boxes: quick lists kept on Today ------------------------------------------------- */
+/* ---- Boxes: quick lists and projects kept on Today ------------------------------------ */
 .today-box .panel-header h2 {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 .today-box .box-date {
   flex: 0 0 auto;
+}
+/* A project box's title opens the project. */
+.box-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.box-link:hover {
+  text-decoration: underline;
+}
+.box-link svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--ink-3);
+}
+.box-more {
+  align-self: flex-start;
+  margin: 4px 0;
 }
 .box-item .row-main {
   align-items: baseline;

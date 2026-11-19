@@ -1018,5 +1018,39 @@
       "Before/after saved rows, Today pins and receipts.",
       "Scenario-specific assertion results."
     ]
+  },
+  {
+    "id": "quick_capture.31",
+    "feature": "quick_capture",
+    "title": "Add fix the speaker toggle to Transcript Lens for today.",
+    "inputs": [
+      "Add fix the speaker toggle to Transcript Lens for today."
+    ],
+    "persona": "rowan-v1",
+    "expected": [
+      "Dani creates one open task, Fix the speaker toggle, filed under the Transcript Lens project with today's do date, as adding it in that project's Today box would."
+    ],
+    "invariants": [
+      "No other task changes, no Linear issue and no Today pin change."
+    ],
+    "partition": "development",
+    "execution": {
+      "kind": "acceptance_protocol",
+      "status": "not_run",
+      "layer": "command_or_agent",
+      "protocol": "evals/app/protocols.md#command-or-agent"
+    },
+    "setup": [
+      "Use a fresh disposable synthetic database and authenticated owner; never production.",
+      "Use the seeded Transcript Lens project, a project made in Organize with no older project row."
+    ],
+    "steps": [
+      "Ask Dani: Add fix the speaker toggle to Transcript Lens for today.",
+      "Read persisted state and receipt after the operation; compare all affected IDs, revisions and expected outcomes."
+    ],
+    "evidence": [
+      "Before/after saved rows, Today pins and receipts.",
+      "Scenario-specific assertion results."
+    ]
   }
 ]

@@ -10,7 +10,7 @@ from sqlalchemy import func, select, text
 from jarvis.config import get_settings
 from jarvis.db import session_scope
 from jarvis.domain import DomainError
-from jarvis.models import ActionChange, Command, Event
+from jarvis.models import ActionChange, Command, Event, Task
 from jarvis import quick_lists, today
 from test_structure import run
 
@@ -86,7 +86,8 @@ def test_a_list_created_without_a_date_is_pinned_for_its_creator_from_day_to_day
     with session_scope() as db:
         box = today.boxes(db, OWNER, OWNER, DAY)[0]
     assert {k: v for k, v in box.items() if k != "list"} == {
-        "kind": "quick_list", "target_id": groceries["id"], "reason": "pinned", "pinned": True, "date": None}
+        "kind": "quick_list", "target_id": groceries["id"], "reason": "pinned", "pinned": True, "date": None,
+        "title": "Groceries"}
     assert box["list"]["pinned"] is True and [i["title"] for i in box["list"]["items"]] == ["Milk"]
 
 
@@ -172,10 +173,13 @@ def test_archived_promoted_and_cancelled_lists_have_no_box(change):
     assert pinned(OWNER, OWNER) == [(today.QUICK_LIST, groceries["id"])]
 
 
-def test_pinning_another_workspaces_list_or_a_normal_task_is_refused():
+def test_pinning_another_workspaces_list_or_anything_but_a_list_or_project_is_refused():
+    from test_structure import create as record
     private = run("quicklist.create", {"title": "Private"}, owner="other")
-    task = run("task.create", {"title": "Plain task"})
-    for target, code in ((private["id"], "NOT_FOUND"), (task["id"], "NOT_QUICK_LIST")):
+    plain = run("task.create", {"title": "Plain task"})
+    client = record("client", "Harbor")
+    for target, code in ((private["id"], "NOT_FOUND"), (plain["id"], "NOT_PINNABLE"), (client["id"], "NOT_PINNABLE"),
+                         ("missing", "NOT_FOUND")):
         with pytest.raises(DomainError) as refused:
             run("today.pin", {"target_id": target, "pinned": True})
         assert refused.value.code == code
@@ -220,3 +224,198 @@ def test_today_pin_emits_today_changed_replays_and_stays_out_of_activity(monkeyp
         assert db.get(Command, (OWNER, work.id + ":0")).result["data"] == first
         assert db.scalar(select(func.count()).select_from(ActionChange)) == changes
         assert changes_for_work(db, work) == []
+
+
+# Project boxes: a pinned project shows its open tasks for today. A project is pinned by its home record.
+
+def home(title="Eridani", **args):
+    from test_structure import create as record
+    return record("project", title, **args)
+
+
+def task(title, parent, **args):
+    return run("task.create", {"title": title, "parent_task_id": parent["task_id"], **args})
+
+
+def project_box(identity, day=DAY, account=OWNER):
+    with session_scope() as db:
+        return next((box for box in today.boxes(db, OWNER, account, day) if box["target_id"] == identity), None)
+
+
+def shown(identity, day=DAY):
+    box = project_box(identity, day)
+    return None if box is None else [t["title"] for t in box["tasks"]]
+
+
+def pin_project(record, pinned=True):
+    return run("today.pin", {"target_id": record["id"], "pinned": pinned})
+
+
+def test_a_project_box_lists_the_open_tasks_in_its_home_due_or_planned_by_today(monkeypatch):
+    eridani, remotea = home("Eridani"), home("Remotea")
+    task("Overdue fix", eridani, due_date=(DAY - timedelta(days=3)).isoformat())
+    task("Slipped plan", eridani, planned_date=(DAY - timedelta(days=1)).isoformat())
+    step = task("Due today", eridani, due_date=DAY.isoformat())
+    run("task.create", {"title": "Nested step", "parent_task_id": step["id"], "planned_date": DAY.isoformat()})
+    task("Tomorrow", eridani, planned_date=(DAY + timedelta(days=1)).isoformat())
+    task("Someday", eridani)
+    done = task("Already done", eridani, due_date=DAY.isoformat())
+    run("task.complete", {"task_id": done["id"], "expected_revision": done["revision"]})
+    shelved = task("Shelved", eridani, due_date=DAY.isoformat())
+    run("task.update", {"task_id": shelved["id"], "expected_revision": shelved["revision"], "archived": True})
+    task("Other project", remotea, due_date=DAY.isoformat())
+    template = task("Weekly review template", eridani, due_date=DAY.isoformat())
+    with session_scope() as db:
+        db.get(Task, template["id"]).is_template = True
+    # A quick list's items have boxes of their own, so a dated item never shows in a project's box.
+    packing = create("Packing", "Charger", pinned=False)
+    run("task.update", {"task_id": packing["items"][0]["id"], "expected_revision": packing["items"][0]["revision"],
+                        "due_date": DAY.isoformat()})
+    run("task.update", {"task_id": packing["id"], "expected_revision": read(packing["id"])["revision"],
+                        "parent_task_id": eridani["task_id"]})
+    receipt = pin_project(eridani)
+    assert receipt == {"kind": "project", "target_id": eridani["id"], "pinned": True, "on_today": True,
+                       "reason": "pinned"}
+    box = project_box(eridani["id"])
+    assert {k: box[k] for k in ("kind", "target_id", "reason", "pinned", "date", "title", "total")} == {
+        "kind": "project", "target_id": eridani["id"], "reason": "pinned", "pinned": True, "date": None,
+        "title": "Eridani", "total": 4}
+    # Due and overdue's own order: earliest date first, then title.
+    assert shown(eridani["id"]) == ["Overdue fix", "Slipped plan", "Due today", "Nested step"]
+    assert project_box(remotea["id"]) is None
+    # A full box shows its first tasks, and its total still counts them all.
+    monkeypatch.setattr(today, "PROJECT_TASKS", 2)
+    assert (shown(eridani["id"]), project_box(eridani["id"])["total"]) == (["Overdue fix", "Slipped plan"], 4)
+
+
+def test_a_task_in_a_project_box_is_still_due_and_finishing_it_once_clears_both():
+    eridani = home()
+    pin_project(eridani)
+    due = task("Ship the release", eridani, due_date=DAY.isoformat())
+    assert shown(eridani["id"]) == ["Ship the release"]
+    # The box is a second view of the same task: it stays open and due, so Due and overdue keeps it too.
+    with session_scope() as db:
+        row = db.get(Task, due["id"])
+        assert row.status == "open" and row.due_date <= DAY
+    finished = run("task.complete", {"task_id": due["id"], "expected_revision": due["revision"]})
+    assert shown(eridani["id"]) == []
+    with session_scope() as db:
+        assert db.get(Task, due["id"]).status == "completed"
+    run("task.reopen", {"task_id": due["id"], "expected_revision": finished["revision"]})
+    assert shown(eridani["id"]) == ["Ship the release"]
+
+
+def test_adding_in_a_project_box_files_the_task_under_the_project_for_today_and_stays_local():
+    from jarvis.hierarchy import for_task
+    from jarvis.models import Job, LinearIssue
+
+    eridani = home()
+    pin_project(eridani)
+    box = project_box(eridani["id"])
+    assert box["add"] == {"parent_task_id": eridani["task_id"]}
+    added = run("task.create", {"title": "Fix the voice toggle", **box["add"], "planned_date": DAY.isoformat()})
+    assert shown(eridani["id"]) == ["Fix the voice toggle"]
+    with session_scope() as db:
+        assert for_task(db, OWNER, added["id"]).parent_id == eridani["id"]
+        assert db.get(Task, added["id"]).planned_date == DAY
+        # Filing into a project never creates a Linear issue; only Linear's own create or publish does.
+        assert db.scalar(select(func.count()).select_from(LinearIssue)) == 0
+        assert not db.scalar(select(func.count()).select_from(Job).where(Job.kind.like("linear%")))
+
+
+def test_a_linear_issue_filed_under_the_project_shows_in_its_box():
+    from jarvis.hierarchy import for_task
+    from jarvis.linear_structure import move
+    from jarvis.structure import ensure
+
+    eridani = home()
+    pin_project(eridani)
+    # Linear issues keep the legacy "· Linear" project; the Linear mapping files their records under the home.
+    issue = run("task.create", {"title": "Voice toggle sticks", "project": "Eridani · Linear",
+                                "due_date": DAY.isoformat()})
+    assert shown(eridani["id"]) == []
+    with session_scope() as db:
+        assert move(db, OWNER, ensure(db, OWNER), for_task(db, OWNER, issue["id"]), eridani["id"])
+    assert shown(eridani["id"]) == ["Voice toggle sticks"]
+
+
+def test_an_imported_project_adds_by_its_project_id_and_leaves_today_when_finished_there():
+    from test_structure import definition
+
+    legacy = run("project.create", {"name": "Beacon"})
+    definition()
+    pin_project(legacy)
+    box = project_box(legacy["id"])
+    assert box["add"] == {"project_id": legacy["id"]}
+    run("task.create", {"title": "Order the lenses", **box["add"], "planned_date": DAY.isoformat()})
+    assert shown(legacy["id"]) == ["Order the lenses"]
+    # Finishing or archiving it on its older project row takes the box off Today too.
+    for change in ({"status": "completed"}, {"archived": True}):
+        project = run("project.update", {"project_id": legacy["id"], "expected_revision": legacy["revision"], **change})
+        assert project_box(legacy["id"]) is None
+        legacy = run("project.update", {"project_id": legacy["id"], "expected_revision": project["revision"], "status": "active",
+                                      "archived": False})
+        assert project_box(legacy["id"]) is not None
+
+
+def test_dani_and_agents_read_a_project_boxs_tasks_as_compact_rows():
+    from jarvis.task_tools import COMPACT_FIELDS
+
+    eridani = home()
+    task("Write the release notes", eridani, due_date="2020-01-01", notes="n" * 300)
+    pin_project(eridani)
+    with session_scope() as db:
+        box = quick_lists.tool_read(db, OWNER, OWNER, "today_boxes", {})["boxes"][0]
+    row, = box["tasks"]
+    assert set(row) <= {*COMPACT_FIELDS, "source", "notes_preview", "notes_truncated"}
+    assert (row["title"], row["notes_preview"], row["notes_truncated"]) == ("Write the release notes", "n" * 200, True)
+
+
+def test_a_pinned_project_with_nothing_due_keeps_an_empty_box():
+    eridani = home()
+    task("Someday", eridani)
+    pin_project(eridani)
+    box = project_box(eridani["id"])
+    assert (box["tasks"], box["total"], box["add"]) == ([], 0, {"parent_task_id": eridani["task_id"]})
+
+
+@pytest.mark.parametrize("change", ["archived", "completed"])
+def test_an_archived_or_finished_project_hides_its_box_until_it_is_back(change):
+    from test_structure import definition
+
+    eridani = home()
+    pin_project(eridani)
+    changes = {"archived": True} if change == "archived" else {
+        "status_id": next(s["id"] for s in next(t for t in definition()["types"] if t["id"] == "project")["statuses"]
+                          if s["meaning"] == "completed")}
+    hidden = run("record.update", {"record_id": eridani["id"], "expected_revision": eridani["revision"],
+                                   "schema_revision": definition()["revision"], **changes})
+    assert project_box(eridani["id"]) is None
+    assert pinned(OWNER, OWNER) == [(today.PROJECT, eridani["id"])]
+    back = {"archived": False} if change == "archived" else {"status_id": eridani["status_id"]}
+    run("record.update", {"record_id": eridani["id"], "expected_revision": hidden["revision"],
+                          "schema_revision": definition()["revision"], **back})
+    assert project_box(eridani["id"])["title"] == "Eridani"
+
+
+def test_a_project_pins_by_its_record_or_its_task_and_only_for_the_person_pinning():
+    eridani = home()
+    # Dani may hold the task behind the project rather than its record; the pin is the record's either way.
+    assert run("today.pin", {"target_id": eridani["task_id"], "pinned": True})["target_id"] == eridani["id"]
+    assert pinned(OWNER, OWNER) == [(today.PROJECT, eridani["id"])]
+    assert project_box(eridani["id"], account="someone-else") is None
+    assert pin_project(eridani, pinned=False) == {"kind": "project", "target_id": eridani["id"], "pinned": False,
+                                                  "on_today": False, "reason": None}
+    assert pinned(OWNER, OWNER) == [] and project_box(eridani["id"]) is None
+
+
+def test_project_and_list_boxes_share_one_pin_order():
+    groceries = create("Groceries", "Milk")
+    eridani = home()
+    pin_project(eridani)
+    errands = create("Errands", "Bank")
+    with session_scope() as db:
+        assert [(b["kind"], b["title"]) for b in today.boxes(db, OWNER, OWNER, DAY)] == [
+            ("quick_list", "Groceries"), ("project", "Eridani"), ("quick_list", "Errands")]
+    assert [b["target_id"] for b in [project_box(x["id"]) for x in (groceries, eridani, errands)]] == [
+        groceries["id"], eridani["id"], errands["id"]]

@@ -167,6 +167,30 @@ def test_bot_keys_read_lists_and_boxes_and_pin_for_their_own_account(client):
     assert client.get("/api/v1/quick-lists/" + team["id"]).json()["pinned"] is False
 
 
+def test_a_bot_key_needs_organization_read_to_pin_or_see_a_project_box(client):
+    from test_accounts import command
+
+    revision = client.get("/api/v1/structure").json()["revision"]
+    project = command(client, "record.create", type_id="project", title="Release", schema_revision=revision)
+    _, tasks_only = key(client, ["tasks:write"], "Tasks only")
+    # The project's record, the task behind it, and an ID padded with spaces all name the project.
+    for target_id in (project["id"], project["task_id"], " " + project["id"]):
+        refused = call(tasks_only, "today.pin", {"target_id": target_id, "pinned": True})
+        assert refused.status_code == 403 and refused.json()["error"]["code"] == "INSUFFICIENT_SCOPE", refused.text
+    _, organizer = key(client, ["tasks:write", "organization:read"], "Organizer")
+    pinned = call(organizer, "today.pin", {"target_id": project["id"], "pinned": True})
+    assert pinned.status_code == 200, pinned.text
+    assert pinned.json()["data"]["kind"] == "project"
+
+    def boxes(headers):
+        result = rpc(client, headers, "tools/call", {"name": "today_boxes", "arguments": {}}).json()["result"]
+        assert not result.get("isError"), result
+        return [(box["kind"], box["title"]) for box in result["structuredContent"]["boxes"]]
+
+    assert boxes(organizer) == [("project", "Release")]
+    assert boxes(tasks_only) == []
+
+
 def test_parallel_retries_create_once_and_competing_edits_conflict(client):
     _, headers = key(client)
     operation = str(uuid4())

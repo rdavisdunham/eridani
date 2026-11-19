@@ -2142,7 +2142,7 @@ export default function App() {
   }
   const historyOff = conversationHistoryOff || !boot?.preferences.history_enabled;
   const today = dayInZone(boot?.preferences.timezone ?? "America/Chicago");
-  // This person's quick-list boxes on Today, read again with every workspace reload (a change-feed event or a save).
+  // This person's boxes on Today (quick lists and projects), read again with every workspace reload (a change-feed event or a save).
   const [boxes, setBoxes] = useState<TodayBoxData[] | null>(null);
   const [boxesError, setBoxesError] = useState("");
   const [boxesRead, setBoxesRead] = useState(0);
@@ -2843,6 +2843,7 @@ export default function App() {
               onEntry={openCalendarEntry} onNote={id => void openNote(id)}
               boxes={boxes} boxesError={boxesError} onOpenList={openTaskCard} onBoxesChanged={readBoxes}
               onListFinished={finished => { listFinish.finished(finished); readBoxes(); }}
+              onOpenProject={id => { setView("organize"); setOrganizationEditor(null); setRecordControl({ nonce: crypto.randomUUID(), parent_id: id, layout: "browse", section: "work" }); }}
               onNavigate={target => { setQuery(""); if (target === "tasks-today") { setTodayList(true); } else setView(target); }}/>}
             {view === "reminders" && (
               <div className="view-control-row">

@@ -62,6 +62,8 @@ def test_today_boxes_and_pins_load_with_quick_capture_not_core():
     group = GROUPS["quick_capture"][1]
     assert {"today_boxes", "today_pin"} <= names & set(group)
     assert len(group) == 8 and all(len(tools) < 10 for _, tools in GROUPS.values())
+    # Pinning a project is also there when Dani loads the goals and projects tools.
+    assert "today_pin" in GROUPS["goals_projects"][1]
     assert not {"today_boxes", "today_pin"} & set(CORE) and len(CORE) < 20
     for policy in ("baseline", "discovery-v1", "lean-v1"):
         assert not {"today_boxes", "today_pin"} & set(ToolSession(registry(), policy=policy).names)
@@ -90,6 +92,10 @@ def test_today_list_descriptions_stay_short_and_carry_the_list_rules():
     assert '"undo that" means unchecking that item (completed=false)' in tools["quicklist_item"]
     assert "take groceries off Today" in tools["today_pin"]
     assert "stays on Today until its date changes" in tools["today_pin"]
+    # A project box: pin it by its record, and add to it as a task filed under that project for today.
+    assert "quick list or project" in tools["today_pin"] and "project record's ID" in tools["today_pin"]
+    assert "project box holds its tasks due by today" in boxes and "task_create, its add and planned_date today" in boxes and "match list boxes by meaning" in boxes
+    assert "pass parent_task_id: that home's task_id" in tools["task_create"]
 
 
 async def test_dani_reads_and_pins_boxes_for_the_person_asking(client, monkeypatch):

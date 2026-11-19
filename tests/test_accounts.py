@@ -383,6 +383,23 @@ def test_today_pins_are_per_member_and_a_viewer_can_pin_but_not_edit(client):
     assert TestClient(app).get("/api/v1/today/boxes").status_code == 401
 
 
+def test_a_project_pin_is_one_members_own_and_a_viewer_reads_their_pins(client):
+    guest = client_for("guest")
+    w = shared(client, guest)
+    revision = client.get("/api/v1/structure").json()["revision"]
+    project = command(client, "record.create", type_id="project", title="Launch", schema_revision=revision)
+    with session_scope() as db:
+        db.get(WorkspaceMember, (w["id"], "guest")).role = "viewer"
+    assert pin_box(guest, project["id"])["kind"] == "project"
+    # The viewer's Today has the project's box; the owner's Today is unchanged.
+    assert today_boxes(guest) == [(project["id"], "pinned")] and today_boxes(client) == []
+    pins = guest.get("/api/v1/today/pins")
+    assert pins.status_code == 200, pins.text
+    assert [(p["kind"], p["target_id"]) for p in pins.json()["pins"]] == [("project", project["id"])]
+    assert client.get("/api/v1/today/pins").json()["pins"] == []
+    assert TestClient(app).get("/api/v1/today/pins").status_code == 401
+
+
 def test_lists_pin_for_their_creator_on_every_path_and_dani_pins_for_a_viewer(client, monkeypatch):
     from cryptography.fernet import Fernet
     from jarvis import agent_work

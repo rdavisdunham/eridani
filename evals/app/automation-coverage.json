@@ -1,9 +1,9 @@
 {
   "version": 2,
   "registry": {
-    "cases": 1185,
+    "cases": 1186,
     "types": {
-      "contracts": 461,
+      "contracts": 462,
       "pipeline": 306,
       "integration": 156,
       "agent": 150,
@@ -11,8 +11,8 @@
       "voice": 61
     },
     "fully_bound": 245,
-    "component_cases": 231,
-    "sha256": "57e7bf95f1af3b43850251d24567cd3ccf82a9fd853ca3f3529cf233e5f48bdd"
+    "component_cases": 232,
+    "sha256": "583038fa7c337142470e94c92667ce5298e9b66e1bf97ed5c1d364fd6e5b35f0"
   },
   "features": {
     "accounts": {
@@ -7227,9 +7227,9 @@
       ]
     },
     "quick_capture": {
-      "catalog": 30,
+      "catalog": 31,
       "fully_bound": 9,
-      "component_cases": 5,
+      "component_cases": 6,
       "supporting_suites": [
         "batch-c.mjs",
         "tests/test_batch_c.py"
@@ -7417,6 +7417,15 @@
         },
         {
           "case_id": "quick_capture.30",
+          "kind": "acceptance_binding",
+          "reason": "Scenario-specific acceptance assertions are not yet fully bound; supporting tests cannot substitute",
+          "criteria": [
+            "expected.1",
+            "invariants.1"
+          ]
+        },
+        {
+          "case_id": "quick_capture.31",
           "kind": "acceptance_binding",
           "reason": "Scenario-specific acceptance assertions are not yet fully bound; supporting tests cannot substitute",
           "criteria": [

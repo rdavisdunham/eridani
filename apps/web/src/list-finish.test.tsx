@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import { useListFinish, type ListFinish } from "./list-finish";
 import { TodayBox } from "./TodayBox";
-import type { QuickList, Task, TodayBoxData } from "./types";
+import type { QuickList, QuickListBoxData, Task } from "./types";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const item = (id: string, title: string, extra: Partial<Task> = {}) =>
@@ -14,7 +14,7 @@ const quickList = (items: Task[], extra: Partial<QuickList> = {}) => ({
   id: "L", title: "Groceries", status: "open", revision: 5, archived: false, is_quick_list: true, due_date: null, planned_date: null, items,
   done: items.filter(i => i.status === "completed").length, total: items.length, ...extra,
 }) as QuickList;
-const box: TodayBoxData = { kind: "quick_list", target_id: "L", reason: "pinned", pinned: true, date: null,
+const box: QuickListBoxData = { kind: "quick_list", target_id: "L", reason: "pinned", pinned: true, date: null, title: "Groceries",
   list: quickList([item("m", "Milk"), item("b", "Bread", { status: "completed" })]) };
 
 type Reply = { status: number; body: unknown };

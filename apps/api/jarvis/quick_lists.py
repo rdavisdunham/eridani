@@ -113,9 +113,15 @@ def listing(db,owner,query="",account=None,pinned=None):
 def tool_read(db,owner,account,name,arguments):
     """The today_boxes, quicklist_get and quicklist_list reads Dani, bot keys and queued work share. The pins
     are `account`'s, the person the read is for, not the workspace's."""
-    from .today import boxes
+    from .today import PROJECT, boxes
     if name=="today_boxes":
-        return {"boxes":boxes(db,owner,account)}
+        from .task_tools import compact
+        # A project box can hold 50 tasks; compact rows keep the read small in the model's context, as task_list does.
+        items=boxes(db,owner,account)
+        for box in items:
+            if box["kind"]==PROJECT:
+                box["tasks"]=[{**compact(t),"notes_preview":(t.get("notes") or "")[:200],"notes_truncated":len(t.get("notes") or "")>200} for t in box["tasks"]]
+        return {"boxes":items}
     if name=="quicklist_get":
         return read(db,owner,arguments["list_id"],account)
     return listing(db,owner,arguments.get("query",""),account=account,pinned=arguments.get("pinned"))

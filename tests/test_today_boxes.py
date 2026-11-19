@@ -264,6 +264,9 @@ def test_a_project_box_lists_the_open_tasks_in_its_home_due_or_planned_by_today(
     shelved = task("Shelved", eridani, due_date=DAY.isoformat())
     run("task.update", {"task_id": shelved["id"], "expected_revision": shelved["revision"], "archived": True})
     task("Other project", remotea, due_date=DAY.isoformat())
+    template = task("Weekly review template", eridani, due_date=DAY.isoformat())
+    with session_scope() as db:
+        db.get(Task, template["id"]).is_template = True
     # A quick list's items have boxes of their own, so a dated item never shows in a project's box.
     packing = create("Packing", "Charger", pinned=False)
     run("task.update", {"task_id": packing["items"][0]["id"], "expected_revision": packing["items"][0]["revision"],
@@ -336,13 +339,23 @@ def test_a_linear_issue_filed_under_the_project_shows_in_its_box():
     assert shown(eridani["id"]) == ["Voice toggle sticks"]
 
 
-def test_an_imported_project_with_no_task_of_its_own_adds_by_its_project_id():
+def test_an_imported_project_adds_by_its_project_id_and_leaves_today_when_finished_there():
     from test_structure import definition
 
     legacy = run("project.create", {"name": "Beacon"})
     definition()
     pin_project(legacy)
-    assert project_box(legacy["id"])["add"] == {"project_id": legacy["id"]}
+    box = project_box(legacy["id"])
+    assert box["add"] == {"project_id": legacy["id"]}
+    run("task.create", {"title": "Order the lenses", **box["add"], "planned_date": DAY.isoformat()})
+    assert shown(legacy["id"]) == ["Order the lenses"]
+    # Finishing or archiving it on its older project row takes the box off Today too.
+    for change in ({"status": "completed"}, {"archived": True}):
+        project = run("project.update", {"project_id": legacy["id"], "expected_revision": legacy["revision"], **change})
+        assert project_box(legacy["id"]) is None
+        legacy = run("project.update", {"project_id": legacy["id"], "expected_revision": project["revision"], "status": "active",
+                                      "archived": False})
+        assert project_box(legacy["id"]) is not None
 
 
 def test_dani_and_agents_read_a_project_boxs_tasks_as_compact_rows():

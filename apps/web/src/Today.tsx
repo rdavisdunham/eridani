@@ -35,7 +35,7 @@ type Props = {
   onEntry: (entry: CalendarEntry) => void;
   onNote: (id: string) => void;
   onNavigate: (target: "tasks-today" | "inbox" | "calendar" | "notes") => void;
-  /** This person's quick-list boxes, in order; null until they are first read. */
+  /** This person's boxes, quick lists and projects, in order; null until they are first read. */
   boxes: TodayBoxData[] | null;
   boxesError?: string;
   onOpenList: (list: QuickList) => void;

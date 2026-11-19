@@ -61,8 +61,11 @@ def reason(row, pinned, day):
     from .quick_lists import FINISHED
 
     if isinstance(row, StructureRecord):
-        work = object_session(row).get(Task, row.task_id) if row.task_id else None
-        return "pinned" if pinned and not row.archived and not (work and work.status in FINISHED) else None
+        db = object_session(row)
+        # An imported project has no task behind its record; it is finished or archived on its older project row.
+        work = db.get(Task, row.task_id) if row.task_id else db.get(Project, row.id)
+        done = work is not None and (work.status in FINISHED or work.archived)
+        return "pinned" if pinned and not row.archived and not done else None
     if not row.is_quick_list or row.archived or row.status in FINISHED:
         return None
     if pinned:

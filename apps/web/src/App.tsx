@@ -2142,7 +2142,7 @@ export default function App() {
   }
   const historyOff = conversationHistoryOff || !boot?.preferences.history_enabled;
   const today = dayInZone(boot?.preferences.timezone ?? "America/Chicago");
-  // This person's quick-list boxes on Today, read again with every workspace reload (a change-feed event or a save).
+  // This person's boxes on Today (quick lists and projects), read again with every workspace reload (a change-feed event or a save).
   const [boxes, setBoxes] = useState<TodayBoxData[] | null>(null);
   const [boxesError, setBoxesError] = useState("");
   const [boxesRead, setBoxesRead] = useState(0);

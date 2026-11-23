@@ -35,6 +35,7 @@ TURN = {
 def settings(monkeypatch):
     monkeypatch.setenv("JARVIS_OPENAI_API_KEY", "synthetic-project-key")
     monkeypatch.setenv("JARVIS_EXTERNAL_SERVICES_ENABLED", "true")
+    monkeypatch.setenv("JARVIS_INTEGRATION_ENCRYPTION_KEY", "")
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()
@@ -144,6 +145,7 @@ def test_authentication_scope_and_bounded_inputs(client, monkeypatch):
     readiness = client.get("/api/glassface/dani/status", headers=glass)
     assert readiness.status_code == 200 and readiness.json() == {
         "ready": True,
+        "live": False,
         "model": get_settings().live_model,
     }
     with session_scope() as db:

@@ -736,6 +736,27 @@
   ],
   "http_routes": [
     {
+      "method": "WEBSOCKET",
+      "path": "/api/glassface/dani/live",
+      "handler": "native_voice",
+      "source": "apps/api/jarvis/glassface_media.py",
+      "feature": "live_voice"
+    },
+    {
+      "method": "POST",
+      "path": "/api/glassface/dani/live/tickets",
+      "handler": "tickets",
+      "source": "apps/api/jarvis/glassface_media.py",
+      "feature": "live_voice"
+    },
+    {
+      "method": "POST",
+      "path": "/api/glassface/dani/live/verify",
+      "handler": "verify_proof",
+      "source": "apps/api/jarvis/glassface_media.py",
+      "feature": "live_voice"
+    },
+    {
       "method": "GET",
       "path": "/api/glassface/dani/status",
       "handler": "status",

@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
+from time import monotonic
 from typing import Annotated, Literal
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 from websockets.exceptions import WebSocketException
 
-from . import bot_access, budget, glassface_live
+from . import bot_access, budget, glassface_live, work_crypto
 from .config import get_settings, require_external_services
 from .db import engine, session_scope
 from .domain import DomainError
@@ -50,7 +51,7 @@ class Turn(Input):
     history: Annotated[list[Exchange], Field(max_length=4)] = Field(default_factory=list)
 
 
-async def read_body(request):
+async def read_body(request, schema=Turn):
     if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
         raise DomainError("INVALID_ARGUMENT", "Use application/json.", 415)
     raw = bytearray()
@@ -59,7 +60,7 @@ async def read_body(request):
             raise DomainError("INVALID_ARGUMENT", "Glass turn exceeds its size limit.", 413)
         raw.extend(chunk)
     try:
-        return Turn.model_validate_json(raw)
+        return schema.model_validate_json(raw)
     except ValidationError:
         # Pydantic's detailed error contains the submitted excerpt.
         raise DomainError("INVALID_ARGUMENT", "Invalid Glass turn.", 422) from None
@@ -77,7 +78,7 @@ def granted(db, identity):
 
 
 @contextmanager
-def slot(identity, model, usage):
+def slot(identity, model, usage, allowance_seconds=60):
     # A DB session-level lock spans the provider call across API replicas. Short
     # DB transactions on this same connection leave no transaction open on the network.
     with engine().connect() as conn:
@@ -90,11 +91,18 @@ def slot(identity, model, usage):
             turn_id = str(uuid4())
             with Session(conn) as db, db.begin():
                 owner = granted(db, identity)
-                budget.reserve(db, owner, turn_id, 60 * LIVE_PRICE_PER_SECOND, model)
+                budget.reserve(db, owner, turn_id, allowance_seconds * LIVE_PRICE_PER_SECOND, model)
+
+            touched = monotonic()
 
             def recheck():
+                nonlocal touched
                 with Session(conn) as db, db.begin():
                     granted(db, identity)
+                    if monotonic() - touched >= 45:
+                        # Keep a long-running voice reservation visible to the stale-hold sweep.
+                        budget.ensure_room(db, owner, turn_id, 0)
+                        touched = monotonic()
 
             try:
                 yield recheck
@@ -122,12 +130,12 @@ def slot(identity, model, usage):
 
 
 @asynccontextmanager
-async def leased_slot(identity, model, usage):
+async def leased_slot(identity, model, usage, allowance_seconds=60):
     # Serialize every use of the leased SQLAlchemy connection on one worker.
     # Cancellation can arrive during admission or a grant check. Enqueuing
     # release on the same worker makes it run after that operation finishes.
     loop = asyncio.get_running_loop()
-    manager = slot(identity, model, usage)
+    manager = slot(identity, model, usage, allowance_seconds)
     with ThreadPoolExecutor(max_workers=1) as worker:
         admitted = worker.submit(manager.__enter__)
 
@@ -159,7 +167,14 @@ def authorized_settings(identity):
 @router.get("/api/glassface/dani/status")
 def status(identity: Bot):
     settings = authorized_settings(identity)
-    return JSONResponse({"ready": True, "model": settings.live_model}, headers={"Cache-Control": "no-store"})
+    try:
+        work_crypto.cipher()
+        native = True
+    except DomainError:
+        native = False
+    return JSONResponse(
+        {"ready": True, "model": settings.live_model, "live": native}, headers={"Cache-Control": "no-store"}
+    )
 
 
 @router.post("/api/glassface/dani/turn", response_model=dict[str, str])

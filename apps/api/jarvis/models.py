@@ -739,6 +739,7 @@ class BotCredential(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     rate_window: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     rate_count: Mapped[int] = mapped_column(Integer, default=0)
+    glass_live_ticket: Mapped[dict | None] = mapped_column(JSONB(none_as_null=True))
 
 # Register configurable planner tables with the shared metadata.
 from .structure_models import (StructureSchema, StructureProposal, StructureRecord, StructureLink, FieldUnderstanding, RoutingObservation, RoutingPattern, RoutingReview, RecordOverview, RecordOverviewState, PersonBucketLink)  # noqa: E402,F401

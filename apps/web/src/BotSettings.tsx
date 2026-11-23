@@ -6,7 +6,8 @@ import { SettingsGroup } from "./SettingsLayout";
 export type BotKey = { id: string; name: string; prefix: string; scopes: string[];
   expires_at: string; created_at: string; revoked_at: string | null; last_used_at: string | null };
 type KeyList = { items: BotKey[]; api_url: string; mcp_url: string };
-export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false) {
+export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false, keyType: "agent" | "glass" = "agent") {
+  if (keyType === "glass") return ["glassface:dani"];
   return [...Object.entries(levels).filter(([,level]) => level !== "none").map(([group,level]) => `${group}:${level}`),
     ...(queued ? ["work:run"] : []), ...(runTools ? ["agents:session"] : []), ...(runRead ? ["agents:read"] : []),
     ...(sources ? ["sources:write"] : [])];
@@ -106,7 +107,7 @@ function BotKeyForm({ personal, readOnly, canDesign, busy, onCreate }: Workspace
   const [days, setDays] = useState(90), [queued, setQueued] = useState(false), [runTools, setRunTools] = useState(false), [runRead, setRunRead] = useState(false), [sources, setSources] = useState(false);
   const [levels, setLevels] = useState<Record<string,string>>({ tasks: readOnly ? "read" : "write", organization: "read", notes: "none", records: "none", schema: "read", sessions: "none", context: "none" });
   const glass = personal && !readOnly && keyType === "glass";
-  const scopes = glass ? ["glassface:dani"] : permissionScopes(levels, queued, runTools, runRead, sources);
+  const scopes = permissionScopes(levels, queued, runTools, runRead, sources, glass ? "glass" : "agent");
   const valid = glass || (!!name.trim() && (Object.values(levels).some(v => v !== "none") || sources));
   return <form className="settings-form bot-key-form" onSubmit={event => {
     event.preventDefault();

@@ -295,6 +295,7 @@ def test_hangup_during_provider_handshake_avoids_billable_start(client, monkeypa
         ("What is done?", "", "input", "finished", True),
         ("Which terminals have finished?", "", "input", "finished", False),
         ("Hey Dani, take me home.", "", "input", "home", False),
+        ("Please, start a new terminal.", "", "input", "launcher", False),
         ("Switch to the terminal working on launcher.", "", "input", "find", False),
         ("What finished?", " Then tell it to retry. Send that.", "input", None, False),
         ("What finished?", "after-read", "input", "finished", False),
@@ -387,6 +388,7 @@ def test_read_only_voice_controls_preserve_the_live_session_handle(
             "finished": "What finished?",
             "open": "Show me that terminal",
             "home": "Take me home",
+            "launcher": "Start a new terminal",
             "find": phrase.lower().rstrip("."),
         }[action],
     }

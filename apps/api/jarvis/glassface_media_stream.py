@@ -5,6 +5,7 @@ import base64
 import json
 import math
 import re
+from contextlib import AsyncExitStack
 from uuid import uuid4
 
 from websockets.asyncio.client import connect
@@ -126,24 +127,37 @@ def session_start(model, terminal):
 
 
 async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds):
-    async with connect(
-        live.LIVE_URL,
-        additional_headers={"Authorization": "Bearer " + key},
-        open_timeout=6,
-        close_timeout=2,
-        max_size=1_000_000,
-        max_queue=8,
-    ) as ws:
+    async with AsyncExitStack() as resources:
+        first = asyncio.create_task(peer.receive())
+
+        @resources.push_async_callback
+        async def stop_reading():
+            first.cancel()
+            await asyncio.gather(first, return_exceptions=True)
+
+        ws = await resources.enter_async_context(
+            connect(
+                live.LIVE_URL,
+                additional_headers={"Authorization": "Bearer " + key},
+                open_timeout=6,
+                close_timeout=2,
+                max_size=1_000_000,
+                max_queue=8,
+            )
+        )
         ready = asyncio.Event()
         clock = asyncio.get_running_loop().time
-        last_audio = first_audio = epoch = None
+        last_audio = first_audio = epoch = requested = None
+        origin_error_ms = math.inf
         mic_bytes = 0
 
         async def from_glass():
             nonlocal last_audio, first_audio, mic_bytes
             audio_cursor = 0
+            pending = first
             while True:
-                message = await peer.receive()
+                message = await pending if pending is not None else await peer.receive()
+                pending = None
                 if message["type"] == "websocket.disconnect":
                     return
                 raw = message.get("bytes")
@@ -168,7 +182,7 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds):
                 )
 
         async def from_provider():
-            nonlocal epoch
+            nonlocal epoch, origin_error_ms
             speech = UserSpeech()
             playback = Playback()
             seen = set()
@@ -180,8 +194,10 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds):
                 kind = event.get("type")
                 usage.observe(event)
                 if kind == "session.started" and not ready.is_set():
+                    acknowledged = clock()
+                    epoch = (requested + acknowledged) / 2
+                    origin_error_ms = 500 * (acknowledged - requested)
                     await recheck()
-                    epoch = clock()
                     ready.set()
                     await peer.send_json({"type": "ready"})
                 elif kind == "session.closed":
@@ -236,6 +252,7 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds):
                             words
                             and offset_ms is not None
                             and speech.start >= offset_ms
+                            and origin_error_ms <= 250
                             and speech.end - offset_ms <= mic_bytes * 1000 / RATE + 350
                         ):
                             if playback.could_echo(words, speech.start, speech.end, 1000 * (clock() - epoch)):
@@ -263,7 +280,13 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds):
         tasks = []
         try:
             await recheck()
+            if first.done():
+                # The wearer can hang up while TLS or database admission is still in flight.
+                # Drain the queued stop/disconnect before a paid provider session is started.
+                await from_glass()
+                return
             usage.attempted = True
+            requested = clock()
             await ws.send(json.dumps(session_start(model, terminal)))
             tasks = [asyncio.create_task(run()) for run in (from_glass, from_provider, check_grant)]
             async with asyncio.timeout(seconds):

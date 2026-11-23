@@ -225,6 +225,79 @@ def test_glass_socket_bridges_native_audio_and_attests_only_the_wearer(client, m
     assert client.post(ROOT + "/verify", headers=headers, json=proof).status_code == 401
 
 
+def test_hangup_during_provider_handshake_avoids_billable_start(client, monkeypatch):
+    import asyncio
+    import threading
+    from contextlib import asynccontextmanager
+
+    from jarvis import glassface_media_stream as stream
+
+    opened = threading.Event()
+    allow_handshake = threading.Event()
+
+    @asynccontextmanager
+    async def slow_connection(*args, **kwargs):
+        opened.set()
+        while not allow_handshake.is_set():
+            await asyncio.sleep(0.01)
+        yield object()  # Any attempt to send session.start is a test failure.
+
+    monkeypatch.setattr(stream, "connect", slow_connection)
+    _, headers = key(client, [routes.SCOPE])
+    token = client.post(ROOT + "/tickets", headers=headers, json=BODY).json()["ticket"]
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": token})
+        assert opened.wait(3)
+        native.send_json({"type": "stop"})
+        allow_handshake.set()
+        assert native.receive_json() == {"type": "ended", "reason": "ended"}
+    with session_scope() as db:
+        row = db.scalar(select(BudgetReservation))
+        assert row.state == "closed" and row.actual == 0
+
+
+def test_uncertain_provider_clock_preserves_voice_but_withholds_terminal_proof(client, monkeypatch):
+    import asyncio
+    import json
+    from contextlib import asynccontextmanager
+
+    from jarvis import glassface_media_stream as stream
+
+    class SlowStart:
+        def __init__(self):
+            self.frames = asyncio.Queue()
+
+        async def send(self, frame):
+            event = json.loads(frame)
+            if event["type"] == "session.start":
+                await asyncio.sleep(0.65)
+                await self.frames.put({"type": "session.started"})
+            elif event["type"] == "session.input_audio.append":
+                await self.frames.put(timed("Tell it to retry. Send that.", 370, 400, "uncertain"))
+                await self.frames.put(timed("Okay.", 500, 600, "next", role="output"))
+            elif event["type"] == "session.close":
+                await self.frames.put({"type": "session.closed", "usage": {"seconds": 15}})
+
+        async def recv(self):
+            return json.dumps(await self.frames.get())
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield SlowStart()
+
+    monkeypatch.setattr(stream, "connect", connection)
+    _, headers = key(client, [routes.SCOPE])
+    token = client.post(ROOT + "/tickets", headers=headers, json=BODY).json()["ticket"]
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": token})
+        assert native.receive_json()["type"] == "ready"
+        native.send_bytes(bytes(800))
+        assert native.receive_json()["role"] == "user"
+        assert native.receive_json()["role"] == "assistant"
+        native.send_json({"type": "stop"})
+        assert native.receive_json()["reason"] == "ended"
+
+
 @pytest.mark.parametrize("stop", ["revoke", "disconnect", "deadline", "bad-control"])
 def test_native_stream_releases_bill_and_cross_replica_lock(client, monkeypatch, stop):
     import asyncio

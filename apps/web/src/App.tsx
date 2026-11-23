@@ -3288,7 +3288,7 @@ export default function App() {
                 )}
                 {settingsSection === "integrations" && <ConnectionsSettings key={boot.workspace?.id ?? boot.account_id}
                   tab={connectionTab} onTab={setConnectionTab} meetings={!boot.workspace?.id && meetingsOn} panels={{
-                  agents: <BotSettings canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} key={boot.workspace?.id ?? boot.account_id} workspace={boot.workspace?.name ?? "Personal"} readOnly={boot.workspace?.role === "viewer"}/>,
+                  agents: <BotSettings personal={personal} canDesign={!boot.workspace?.id||boot.workspace?.role==="owner"} key={boot.workspace?.id ?? boot.account_id} workspace={boot.workspace?.name ?? "Personal"} readOnly={boot.workspace?.role === "viewer"}/>,
                   remotea: <RemoteaSettings key={"remotea-" + (boot.workspace?.id ?? boot.account_id)} readOnly={boot.workspace?.role === "viewer"}
                     onChanged={() => { void api<Bootstrap>("/bootstrap").then(setBoot); }}/>,
                   ...(!boot.workspace?.id ? {

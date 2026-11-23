@@ -166,6 +166,21 @@ def test_authentication_scope_and_bounded_inputs(client, monkeypatch):
     )
 
 
+def test_glass_enrollment_rejects_shared_workspace_and_viewer(client):
+    from test_accounts import client_for, shared
+
+    viewer = client_for("guest")
+    shared(client, viewer, role="viewer")
+    for issuer, reason in ((client, "PERSONAL_WORKSPACE"), (viewer, "READ_ONLY")):
+        response = issuer.post(
+            "/api/v1/bot-keys", json={"name": "Google Glass", "scopes": [endpoint.SCOPE]}
+        )
+        assert response.status_code == 403
+        assert reason in response.text
+    with session_scope() as db:
+        assert db.scalar(select(func.count()).select_from(BotCredential)) == 0
+
+
 def test_spoken_reply_uses_only_supplied_context_and_rechecks_grant(client, monkeypatch):
     identity, headers = key(client, [endpoint.SCOPE])
     revoke = False

@@ -18,7 +18,7 @@ Use a secret store or environment variable for the key, not a prompt, URL, repos
 
 ## Dani on Google Glass
 
-Create a key named **Google Glass** in your personal workspace with only the `glassface:dani` permission. Keep it on the DavisPC gateway. The key owns an independent GPT-Live conversation for the headset.
+In your personal workspace, open **Settings → Connections → Agent keys → Add agent**. Under **Key type**, select **Google Glass**, choose the expiry, and click **Create key**. Copy the one-time key to the DavisPC gateway. This preset grants only `glassface:dani`. The key owns an independent GPT-Live conversation for the headset.
 
 - `GET /api/glassface/dani/status` checks the key and whether hosted voice is configured. A successful check returns `{"ready":true,"model":"…"}` without opening a billed voice session.
 - `POST /api/glassface/dani/turn` accepts a terminal snapshot, a question, and up to four prior Glass exchanges. Dani returns a brief text answer. Eridani applies its voice budget and rechecks the grant before disclosing the answer. Terminal delivery uses the DavisPC gateway's separately guarded receipt path.

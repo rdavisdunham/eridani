@@ -1,12 +1,12 @@
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import httpx
 import pytest
 from cryptography.fernet import Fernet
-from jarvis import budget, work_runner
+from jarvis import budget, models, work_runner
 from jarvis.config import get_settings
 from jarvis.db import session_scope
 from jarvis.domain import DomainError, preferences
@@ -129,9 +129,17 @@ def historic_unconfirmed(rid, amount, recorded, days=20):
         db.get(Usage, rid + ":response").created_at = then
 
 
-def test_three_usage_buckets_stay_separate():
+def freeze_billing_day(monkeypatch, day):
+    # SQLAlchemy column defaults and budget.summary both call models.now().
+    clock = Mock(wraps=datetime)
+    clock.now.return_value = datetime(2026, 10, day, 12, tzinfo=UTC)
+    monkeypatch.setattr(models, "datetime", clock)
+
+
+@pytest.mark.parametrize("day,earlier_month,recorded,records", [(10, True, 0.50, 1), (25, False, 0.75, 2)])
+def test_three_usage_buckets_stay_separate(monkeypatch, day, earlier_month, recorded, records):
+    freeze_billing_day(monkeypatch, day)
     historic_unconfirmed("old", 5, 0.25)
-    earlier_month = (now() - timedelta(days=20)).month != now().month
     with session_scope() as db:
         budget.reserve(db, "davin", "active", 2, "gpt-5.6-luna")
         budget.record_usage(db, "davin", "active", "active:1", "gpt-5.6-luna", {}, 0.5)
@@ -139,7 +147,7 @@ def test_three_usage_buckets_stay_separate():
         budget.close(db, "davin", "lost", uncertain=True)
         db.flush()
         buckets = budget.summary(db, "davin")["buckets"]
-        assert buckets["recorded"] == {"usd": pytest.approx(0.5), "records": 1}
+        assert buckets["recorded"] == {"usd": pytest.approx(recorded), "records": records}
         assert buckets["reserved"] == {"usd": pytest.approx(1.5), "sessions": 1}
         unconfirmed = buckets["unconfirmed"]
         assert unconfirmed["usd"] == pytest.approx(5.75) and unconfirmed["sessions"] == 2
@@ -151,7 +159,8 @@ def test_three_usage_buckets_stay_separate():
         assert holds["active"]["bucket"] == "reserved"
 
 
-def test_reconcile_settles_only_sessions_with_provider_evidence():
+def test_reconcile_settles_only_sessions_with_provider_evidence(monkeypatch):
+    freeze_billing_day(monkeypatch, 10)
     historic_unconfirmed("old-a", 5, 0.25)
     historic_unconfirmed("old-b", 3, 0.10, days=25)
     historic_unconfirmed("old-c", 2, 0, days=15)

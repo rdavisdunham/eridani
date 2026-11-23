@@ -25,6 +25,7 @@ SCOPES = {
     "organization:write": "Create and edit organization",
     "notes:read": "Read notes",
     "notes:write": "Create and edit notes",
+    "glassface:dani": "Use hosted GPT-Live for Glass terminal briefs and conversation (dedicated key)",
     "work:run": "Ask Dani to work using this key's permitted records and tools",
     "sessions:read": "Read the agent session ledger: where coding and chat work happened",
     "sessions:write": "Report agent sessions and file them under issues or records",
@@ -36,7 +37,7 @@ SCOPES = {
     "sources:write": "Submit meeting transcripts and notes; reading them back needs context:read (personal workspace only)",
 }
 # Control scopes mutate on every use: viewers cannot hold them and each use is a write check.
-PRIVILEGED = {"agents:control", "agents:session"}
+PRIVILEGED = {"agents:control", "agents:session", "glassface:dani"}
 # Meeting context is personal (plan_final.md section 6): keys holding these exist only in the personal workspace.
 PERSONAL_ONLY = {"context:read", "context:write", "sources:write"}
 COMMAND_SCOPES = {
@@ -105,6 +106,8 @@ def normalize(scopes):
     values = set(scopes)
     if not values or values - SCOPES.keys():
         raise DomainError("INVALID_ARGUMENT", "Select valid bot permissions.")
+    if "glassface:dani" in values and len(values) != 1:
+        raise DomainError("INVALID_ARGUMENT", "Glass needs a dedicated key with only glassface:dani.")
     # A write scope implies its read twin where one exists (sources:write has none).
     values |= {s.replace(":write", ":read") for s in values if s.endswith(":write")} & SCOPES.keys()
     if "work:run" in values and not any(s.endswith(":read") for s in values):

@@ -6,12 +6,13 @@ import { SettingsGroup } from "./SettingsLayout";
 export type BotKey = { id: string; name: string; prefix: string; scopes: string[];
   expires_at: string; created_at: string; revoked_at: string | null; last_used_at: string | null };
 type KeyList = { items: BotKey[]; api_url: string; mcp_url: string };
-export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false) {
+export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false, keyType: "agent" | "glass" = "agent") {
+  if (keyType === "glass") return ["glassface:dani"];
   return [...Object.entries(levels).filter(([,level]) => level !== "none").map(([group,level]) => `${group}:${level}`),
     ...(queued ? ["work:run"] : []), ...(runTools ? ["agents:session"] : []), ...(runRead ? ["agents:read"] : []),
     ...(sources ? ["sources:write"] : [])];
 }
-const scopeLabel = (scope: string) => scope === "work:run" ? "Dani requests" : scope === "agents:session" ? "Run tools" : scope === "agents:read" ? "Runs, read" : scope === "agents:control" ? "remotea link" : scope === "sources:write" ? "Meeting submission"
+const scopeLabel = (scope: string) => scope === "glassface:dani" ? "Dani on Google Glass" : scope === "work:run" ? "Dani requests" : scope === "agents:session" ? "Run tools" : scope === "agents:read" ? "Runs, read" : scope === "agents:control" ? "remotea link" : scope === "sources:write" ? "Meeting submission"
   : scope.replace("organization", "Goals & projects").replace(":write", ", edit").replace(":read", ", read").replace(/^./, c => c.toUpperCase());
 /** A key that can still act: neither revoked nor past its expiry. */
 export const liveKey = (item: BotKey, now = Date.now()) => !item.revoked_at && new Date(item.expires_at).getTime() > now;
@@ -39,11 +40,11 @@ export function BotKeyList({ items, busy, onRevoke, now = Date.now() }: { items:
   </>;
 }
 
-export function BotSettings({ workspace, readOnly = false, canDesign = true }: { workspace: string; readOnly?: boolean; canDesign?: boolean }) {
+type WorkspaceGrants = { personal?: boolean; readOnly?: boolean; canDesign?: boolean };
+
+export function BotSettings({ workspace, personal = false, readOnly = false, canDesign = true }: WorkspaceGrants & { workspace: string }) {
   const [data, setData] = useState<KeyList | null>(null), [error, setError] = useState("");
-  const [adding, setAdding] = useState(false), [busy, setBusy] = useState(false), [name, setName] = useState("");
-  const [days, setDays] = useState(90), [queued, setQueued] = useState(false), [runTools, setRunTools] = useState(false), [runRead, setRunRead] = useState(false), [sources, setSources] = useState(false);
-  const [levels, setLevels] = useState<Record<string,string>>({ tasks: readOnly ? "read" : "write", organization: "read", notes: "none", records: "none", schema: "read", sessions: "none", context: "none" });
+  const [adding, setAdding] = useState(false), [busy, setBusy] = useState(false);
   const [secret, setSecret] = useState(""), [visible, setVisible] = useState(false), [copied, setCopied] = useState("");
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -56,13 +57,13 @@ export function BotSettings({ workspace, readOnly = false, canDesign = true }: {
     try { await navigator.clipboard.writeText(value); setCopied(label); }
     catch { setError("Copy is unavailable here. Select the value to copy it manually."); }
   }
-  async function create(event: React.FormEvent) {
-    event.preventDefault(); setBusy(true); setError(""); setSecret(""); setCopied("");
+  async function create(name: string, scopes: string[], days: number) {
+    setBusy(true); setError(""); setSecret(""); setCopied("");
     try {
       const result = await post<{ credential: BotKey; token: string }>("/bot-keys", {
-        name, scopes: permissionScopes(levels, queued, runTools, runRead, sources), expires_in_days: days,
+        name, scopes, expires_in_days: days,
       });
-      setSecret(result.token); setVisible(false); setAdding(false); setName(""); setRevision(n => n + 1);
+      setSecret(result.token); setVisible(false); setAdding(false); setRevision(n => n + 1);
     } catch(e) { setError((e as Error).message); setRevision(n => n + 1); }
     finally { setBusy(false); }
   }
@@ -78,25 +79,7 @@ export function BotSettings({ workspace, readOnly = false, canDesign = true }: {
       {adding ? <X size={15}/> : <Plus size={15}/>} {adding ? "Cancel" : "Add agent"}</button>}>
     {error && <p className="error-banner" role="alert">{error}</p>}
     {!data && !error && <p role="status" className="settings-empty">Loading connected agents…</p>}
-    {adding && <form className="settings-form bot-key-form" onSubmit={create}>
-      <label className="field wide"><span className="field-label-text">Agent name</span><input autoFocus value={name} maxLength={80} required placeholder="For example, Codex" onChange={e => setName(e.target.value)}/></label>
-      {[["records","Custom records (includes note content)"],["schema","Structure definitions"],["tasks","Task scheduling"],["organization","Legacy organization"],["notes","Notes"],["sessions","Agent sessions (where coding and chat work happened)"],["context","Meeting context (personal workspace only)"]].map(([group,label]) =>
-        <label className="field" key={group}><span className="field-label-text">{label}</span><select value={levels[group]} onChange={e => setLevels({...levels, [group]:e.target.value})}>
-          <option value="none">No access</option><option value="read">Read</option>{!readOnly && (group!=="schema"||canDesign) && <option value="write">Read & edit</option>}
-        </select></label>)}
-      <label className="field"><span className="field-label-text">Key expires after</span><select value={days} onChange={e => setDays(Number(e.target.value))}>
-        <option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select></label>
-      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={queued} onChange={e => setQueued(e.target.checked)}/>
-        Allow requests to Dani’s background agent</label>}
-      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={runTools} onChange={e => setRunTools(e.target.checked)}/>
-        Run tools for coding agents started from a task (remotea): read the plan, tick steps, submit the plan</label>}
-      <label className="inline-check wide"><input type="checkbox" checked={runRead} onChange={e => setRunRead(e.target.checked)}/>
-        Read runs started from tasks (remotea): plan, timeline, questions and judge verdicts</label>
-      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={sources} onChange={e => setSources(e.target.checked)}/>
-        Submit meeting transcripts and notes (personal workspace only; reading them back needs Meeting context)</label>}
-      <p className="footnote">Access applies to this workspace. Personal memory, conversations and connected accounts stay private. Revoking a key stops future actions, including queued work.</p>
-      <div className="settings-form-actions"><button className="btn btn-primary" disabled={busy || !name.trim() || (Object.values(levels).every(v => v === "none") && !sources)}>{busy ? "Creating…" : "Create key"}</button></div>
-    </form>}
+    {adding && <BotKeyForm personal={personal} readOnly={readOnly} canDesign={canDesign} busy={busy} onCreate={create}/>}
     {secret && <div className="bot-secret" role="region" aria-label="New agent key">
       <strong>Copy this key now</strong><p>This is the only time it will be shown.</p>
       <label className="sr-only" htmlFor="bot-secret">New agent key</label>
@@ -115,4 +98,44 @@ export function BotSettings({ workspace, readOnly = false, canDesign = true }: {
       <div className="settings-links"><a href="https://github.com/rdavisdunham/jarvis/blob/main/docs/EXTERNAL_AGENTS.md" target="_blank" rel="noreferrer">Connection guide</a></div>
     </details>}
   </SettingsGroup>;
+}
+
+function BotKeyForm({ personal, readOnly, canDesign, busy, onCreate }: WorkspaceGrants & {
+  busy: boolean; onCreate: (name: string, scopes: string[], days: number) => Promise<void>;
+}) {
+  const [keyType, setKeyType] = useState("agent"), [name, setName] = useState("");
+  const [days, setDays] = useState(90), [queued, setQueued] = useState(false), [runTools, setRunTools] = useState(false), [runRead, setRunRead] = useState(false), [sources, setSources] = useState(false);
+  const [levels, setLevels] = useState<Record<string,string>>({ tasks: readOnly ? "read" : "write", organization: "read", notes: "none", records: "none", schema: "read", sessions: "none", context: "none" });
+  const glass = personal && !readOnly && keyType === "glass";
+  const scopes = permissionScopes(levels, queued, runTools, runRead, sources, glass ? "glass" : "agent");
+  const valid = glass || (!!name.trim() && (Object.values(levels).some(v => v !== "none") || sources));
+  return <form className="settings-form bot-key-form" onSubmit={event => {
+    event.preventDefault();
+    if (valid && !busy) void onCreate(glass ? "Google Glass" : name, scopes, days);
+  }}>
+    {personal && !readOnly && <label className="field wide"><span className="field-label-text">Key type</span>
+      <select value={keyType} onChange={e => setKeyType(e.target.value)}>
+        <option value="agent">Agent</option><option value="glass">Google Glass</option>
+      </select>
+    </label>}
+    {glass ? <p className="footnote">This key lets the Glass gateway ask Dani about the terminal on your headset.</p> : <>
+      <label className="field wide"><span className="field-label-text">Agent name</span><input autoFocus value={name} maxLength={80} required placeholder="For example, Codex" onChange={e => setName(e.target.value)}/></label>
+      {[["records","Custom records (includes note content)"],["schema","Structure definitions"],["tasks","Task scheduling"],["organization","Legacy organization"],["notes","Notes"],["sessions","Agent sessions (where coding and chat work happened)"],["context","Meeting context (personal workspace only)"]].map(([group,label]) =>
+        <label className="field" key={group}><span className="field-label-text">{label}</span><select value={levels[group]} onChange={e => setLevels({...levels, [group]:e.target.value})}>
+          <option value="none">No access</option><option value="read">Read</option>{!readOnly && (group!=="schema"||canDesign) && <option value="write">Read & edit</option>}
+        </select></label>)}
+      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={queued} onChange={e => setQueued(e.target.checked)}/>
+        Allow requests to Dani’s background agent</label>}
+      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={runTools} onChange={e => setRunTools(e.target.checked)}/>
+        Run tools for coding agents started from a task (remotea): read the plan, tick steps, submit the plan</label>}
+      <label className="inline-check wide"><input type="checkbox" checked={runRead} onChange={e => setRunRead(e.target.checked)}/>
+        Read runs started from tasks (remotea): plan, timeline, questions and judge verdicts</label>
+      {!readOnly && <label className="inline-check wide"><input type="checkbox" checked={sources} onChange={e => setSources(e.target.checked)}/>
+        Submit meeting transcripts and notes (personal workspace only; reading them back needs Meeting context)</label>}
+      <p className="footnote">Access applies to this workspace. Personal memory, conversations and connected accounts stay private. Revoking a key stops future actions, including queued work.</p>
+    </>}
+    <label className="field"><span className="field-label-text">Key expires after</span><select value={days} onChange={e => setDays(Number(e.target.value))}>
+      <option value={30}>30 days</option><option value={90}>90 days</option><option value={365}>1 year</option></select></label>
+    <div className="settings-form-actions"><button className="btn btn-primary" disabled={busy || !valid}>{busy ? "Creating…" : "Create key"}</button></div>
+  </form>;
 }

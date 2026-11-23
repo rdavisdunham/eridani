@@ -16,6 +16,13 @@ Use a secret store or environment variable for the key, not a prompt, URL, repos
 
 **Compatibility:** MCP clients must support a configured Bearer header. This release does not implement MCP OAuth discovery, client registration or a consent flow. Clients that only connect through OAuth need that later adapter; Eridani's Google website login is not an MCP authorization server.
 
+## Dani on Google Glass
+
+In your personal workspace, open **Settings → Connections → Agent keys → Add agent**. Under **Key type**, select **Google Glass**, choose the expiry, and click **Create key**. Copy the one-time key to the DavisPC gateway. This preset grants only `glassface:dani`. The key owns an independent GPT-Live conversation for the headset.
+
+- `GET /api/glassface/dani/status` checks the key and whether hosted voice is configured. A successful check returns `{"ready":true,"model":"…"}` without opening a billed voice session.
+- `POST /api/glassface/dani/turn` accepts a terminal snapshot, a question, and up to four prior Glass exchanges. Dani returns a brief text answer. Eridani applies its voice budget and rechecks the grant before disclosing the answer. Terminal delivery uses the DavisPC gateway's separately guarded receipt path.
+
 ## Permissions
 
 `tasks:read/write`, `organization:read/write`, and `notes:read/write` independently control access. Meeting context has its own `context:read`, `context:write` and `sources:write` permissions (see "Meeting context"). Organization includes spaces, areas, goals, projects and assignees. Write includes read. An optional `work:run` permission lets the client send natural-language requests to Eri; model usage is incurred only for those requests. It does not add record permissions.

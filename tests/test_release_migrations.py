@@ -574,9 +574,8 @@ def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_
         tables = columns()
         with Session(trial) as db:
             before = {t.id: state(t) for t in db.scalars(select(Task))}
-        migrate('upgrade', 'head')
-        migrate('check')
-        # The previous release's models still fit: the upgrade only adds the pins table.
+        migrate('upgrade', '0065_today_pins')
+        # The pins release only adds its own table. Later releases may add columns.
         after = columns()
         assert set(after) - set(tables) == {'today_pins'} and all(after[t] == tables[t] for t in tables)
         with Session(trial) as db:
@@ -618,6 +617,7 @@ def test_today_pins_migration_converts_old_pins_and_finishes_checked_lists(test_
             assert c.scalar(text("SELECT planned_date FROM tasks WHERE id='pinned-today'")) is None
             assert c.scalar(text("SELECT status FROM tasks WHERE id='all-checked'")) == 'completed'
         migrate('upgrade', 'head')
+        migrate('check')
     finally:
         if trial:
             trial.dispose()

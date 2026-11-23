@@ -530,6 +530,8 @@
       "apps/api/jarvis/live_voice.py",
       "apps/api/jarvis/glassface_dani.py",
       "apps/api/jarvis/glassface_live.py",
+      "apps/api/jarvis/glassface_media.py",
+      "apps/api/jarvis/glassface_media_stream.py",
       "apps/api/jarvis/voice_control.py",
       "apps/api/jarvis/voice_end_policy.py",
       "apps/web/src/voice-capture.ts",
@@ -538,6 +540,7 @@
     "regression_files": [
       "tests/test_live_voice.py",
       "tests/test_glassface_dani.py",
+      "tests/test_glassface_media.py",
       "tests/test_voice_settlement.py",
       "tests/test_voice.py",
       "tests/test_voice_drafts.py",

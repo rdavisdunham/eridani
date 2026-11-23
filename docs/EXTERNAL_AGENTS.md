@@ -23,6 +23,20 @@ In your personal workspace, open **Settings → Connections → Agent keys → A
 - `GET /api/glassface/dani/status` checks the key and whether hosted voice is configured. A successful check returns `{"ready":true,"model":"…"}` without opening a billed voice session.
 - `POST /api/glassface/dani/turn` accepts a terminal snapshot, a question, and up to four prior Glass exchanges. Dani returns a brief text answer. Eridani applies its voice budget and rechecks the grant before disclosing the answer. Terminal delivery uses the DavisPC gateway's separately guarded receipt path.
 
+### Hands-free headset audio
+
+A tap on Glass starts a native GPT-Live conversation. A second tap ends it. DavisPC uses the dedicated key to request a 45-second, single-use ticket from `POST /api/glassface/dani/live/tickets` with the selected terminal snapshot and its opaque focus. Issuing a replacement ticket retires the previous ticket. The free status endpoint advertises `live: true` when the host supports media and can authenticate a terminal instruction.
+
+The headset opens `wss://app.eridani.app/api/glassface/dani/live` and sends `{"type":"start","ticket":"…"}` as its first message. After `ready`, Glass and Eridani exchange binary G.711 μ-law audio (8 kHz mono, 160 bytes per 20 ms). Eridani streams those bytes to and from its configured GPT-Live model. Eridani paces speaker audio at 8,000 bytes per second with up to 400 ms of initial buffering. JSON frames carry incremental captions and clear pending playback on interruption. Sending `{"type":"stop"}` or disconnecting closes the session. Sessions share the existing voice budget, end within five minutes and recheck the device grant during use.
+
+For a focused agent, say **“Tell it to retry once. Send that.”** You can also finish with **“end instruction.”** GPT-Live supplies timed transcript fragments. Eridani requires an ordered wearer instruction and its spoken terminator before it issues a proof. [GPT-Live WebSocket audio](https://developers.openai.com/api/docs/guides/voice-websockets) · [Transcript timing](https://developers.openai.com/api/docs/guides/live-conversations)
+
+Say **“Show me that terminal”** to open the selected terminal, or **“What finished?”** to look up a recent completion even from an empty session. These two read-only phrases settle after a brief pause. Any immediate continuation cancels the pending lookup. Only the exact read command goes to DavisPC.
+
+Glass receives the action, a proof and a stable operation ID. DavisPC presents the proof at `POST /api/glassface/dani/live/verify` using the same dedicated key. It receives the original focus, instruction and operation ID for delivery checks and receipt recovery. Proofs expire after 90 seconds.
+
+User captions and proofs carry approximate start and end times in milliseconds from the first microphone packet. Eridani withholds a proof if the provider clock origin is uncertain by over 250 ms, the instruction overlaps speaker audio or its echo tail, or the words repeat a recent assistant caption. Glass also checks its own playback. After an overlap, wait for the speaker to go quiet and repeat the instruction. A slow provider start can restrict a session to conversation. Starting a new session or using the direct terminal controls lets you send the instruction.
+
 ## Permissions
 
 `tasks:read/write`, `organization:read/write`, and `notes:read/write` independently control access. Meeting context has its own `context:read`, `context:write` and `sources:write` permissions (see "Meeting context"). Organization includes spaces, areas, goals, projects and assignees. Write includes read. An optional `work:run` permission lets the client send natural-language requests to Eri; model usage is incurred only for those requests. It does not add record permissions.

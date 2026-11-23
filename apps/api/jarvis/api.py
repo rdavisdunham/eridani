@@ -112,6 +112,8 @@ from .external_mcp import bare_path as mcp_bare_path, mount as mcp_mount
 from .external_routes import router as external_router
 
 app.include_router(external_router)
+from .glassface_dani import router as glassface_dani_router
+app.include_router(glassface_dani_router)
 from .agent_link import router as agent_link_router
 
 app.include_router(agent_link_router)

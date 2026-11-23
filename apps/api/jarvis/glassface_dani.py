@@ -173,7 +173,13 @@ def status(identity: Bot):
     except DomainError:
         native = False
     return JSONResponse(
-        {"ready": True, "model": settings.live_model, "live": native}, headers={"Cache-Control": "no-store"}
+        {
+            "ready": True,
+            "model": settings.live_model,
+            "live": native,
+            **({"screenContext": True} if native else {}),
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 

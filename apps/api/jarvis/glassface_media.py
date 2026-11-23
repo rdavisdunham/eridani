@@ -34,6 +34,7 @@ NO_STORE = {"Cache-Control": "no-store"}
 class TicketRequest(Input):
     terminal: Terminal
     focus: str = Field(max_length=160)
+    view: glassface_media_stream.View | None = None
 
 
 class ProofRequest(Input):
@@ -53,7 +54,7 @@ def issue(identity, body):
         granted(db, identity)  # Serializes issuance, redemption and revocation across replicas.
         db.get(BotCredential, identity).glass_live_ticket = {
             "digest": digest,
-            "context": Fernet(secret).encrypt(body.model_dump_json().encode()).decode(),
+            "context": Fernet(secret).encrypt(body.model_dump_json(exclude_none=True).encode()).decode(),
         }
     # Only the client holds the per-ticket key that opens the temporary terminal context.
     return identity + "." + secret.decode().rstrip("=")
@@ -92,7 +93,7 @@ def consume(ticket):
     return identity, body
 
 
-def attest(identity, focus, action, text):
+def attest(identity, focus, action, text, view=None):
     operation = str(uuid4())
     assertion = {
         "purpose": "glass-live-utterance-v1",
@@ -102,6 +103,8 @@ def attest(identity, focus, action, text):
         "text": text,
         "operation": operation,
     }
+    if view is not None:
+        assertion["view"] = view
     return {
         "type": "utterance",
         "action": action,
@@ -123,7 +126,7 @@ def verify(identity, proof):
         or obj.get("credential") != identity
     ):
         raise invalid()
-    return {key: obj[key] for key in ("focus", "text", "operation")}
+    return {key: obj[key] for key in ("focus", "text", "operation", "view") if key in obj}
 
 
 @router.post("/api/glassface/dani/live/tickets")
@@ -177,11 +180,11 @@ async def native_voice(peer: WebSocket):
         # Allow for setup, the media deadline, graceful close and billing rounding.
         async with leased_slot(identity, settings.live_model, usage, LIVE_SECONDS + 20) as recheck:
 
-            async def proof(action, words):
+            async def proof(action, words, view=None):
                 if not body["focus"]:
                     return None
                 await recheck()
-                return attest(identity, body["focus"], action, words)
+                return attest(identity, body["focus"], action, words, view)
 
             await glassface_media_stream.bridge(
                 peer,
@@ -192,6 +195,7 @@ async def native_voice(peer: WebSocket):
                 recheck,
                 proof,
                 LIVE_SECONDS,
+                view=body.get("view"),
             )
     except DomainError as exc:
         reason, code = ("unavailable", 1013) if exc.status >= 429 else ("unauthorized", 1008)

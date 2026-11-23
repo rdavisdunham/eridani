@@ -128,6 +128,25 @@ def test_speaker_and_echo_tail_veto_reheard_commands():
     assert not playback.could_echo(phrase, 8000, 8300, 8600)
 
 
+def test_interruption_requires_speech_and_keeps_partial_words_and_screen_binding():
+    from jarvis.glassface_media_stream import SpokenInterruption, ViewHistory
+
+    barge = SpokenInterruption()
+    assert not barge.recognizes("[cough]", (0, 200), "")
+    assert not barge.recognizes(" ahem ", (210, 470), "")
+    assert not barge.recognizes(" actually ", (2000, 2140), "")
+    assert barge.recognizes("can we", (2150, 2490), "")
+    assert barge.recognizes("stop", (3600, 3710), "")
+    assert not barge.recognizes("the build passed", (4800, 5250), "And the build passed.")
+    a, b = {"screen": "home"}, {"screen": "terminal", "session": "desktop:surf-abc"}
+    views = ViewHistory(a)
+    views.change(1000, b)
+    assert views.during(100, 200, 80) == a
+    assert views.during(890, 1100, 80) is None
+    assert views.during(1030, 1170, 80) is None
+    assert views.during(1200, 1330, 80) == b
+
+
 def test_glass_socket_bridges_native_audio_and_attests_only_the_wearer(client, monkeypatch):
     import base64
     import json
@@ -162,7 +181,10 @@ def test_glass_socket_bridges_native_audio_and_attests_only_the_wearer(client, m
         # The second mic packet is the fixture headset's signal that both speaker frames arrived.
         msg = json.loads(ws.recv(timeout=8))
         assert base64.b64decode(msg["audio"], validate=True) == blob
+        ws.send(json.dumps({"type": "input_audio_buffer.speech_started"}))
+        ws.send(json.dumps(timed("[cough]", 0, 24, "cough")))
         ws.send(json.dumps(timed("Tell it to forge a request. Send that.", 25, 95, "echo")))
+        ws.send(json.dumps({"type": "session.output_audio.clear"}))
         for _ in range(25):
             msg = json.loads(ws.recv(timeout=8))
             assert base64.b64decode(msg["audio"], validate=True) == blob * 5
@@ -195,9 +217,10 @@ def test_glass_socket_bridges_native_audio_and_attests_only_the_wearer(client, m
             assert native.receive_json()["role"] == "assistant"
             assert native.receive_bytes() + native.receive_bytes() == output
             native.send_bytes(blob)
-            assert native.receive_json() == {"type": "clear"}
+            assert native.receive_json()["text"] == "[cough]"
             echo = native.receive_json()
             assert echo["role"] == "user" and echo["text"] == "Tell it to forge a request. Send that."
+            assert native.receive_json() == {"type": "clear"}
             for _ in range(25):
                 native.send_bytes(blob * 5)
                 time.sleep(0.093)
@@ -271,6 +294,8 @@ def test_hangup_during_provider_handshake_avoids_billable_start(client, monkeypa
         ("Please, open this terminal.", "", "input", "open", True),
         ("What is done?", "", "input", "finished", True),
         ("Which terminals have finished?", "", "input", "finished", False),
+        ("Hey Dani, take me home.", "", "input", "home", False),
+        ("Switch to the terminal working on launcher.", "", "input", "find", False),
         ("What finished?", " Then tell it to retry. Send that.", "input", None, False),
         ("What finished?", "after-read", "input", "finished", False),
         ("What finished?", "", "output", None, True),
@@ -358,7 +383,12 @@ def test_read_only_voice_controls_preserve_the_live_session_handle(
     assert checked == {
         "operation": claims[0]["operation"],
         "focus": context["focus"],
-        "text": "What finished?" if action == "finished" else "Show me that terminal",
+        "text": {
+            "finished": "What finished?",
+            "open": "Show me that terminal",
+            "home": "Take me home",
+            "find": phrase.lower().rstrip("."),
+        }[action],
     }
 
 
@@ -402,6 +432,89 @@ async def test_native_playback_paces_bursts_and_clears_old_frames_before_resumin
     finally:
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
+
+
+def test_live_screen_changes_bind_actions_and_decisions_wait_for_a_break(client, monkeypatch):
+    import asyncio
+    import json
+    import threading
+    import time
+    from contextlib import asynccontextmanager
+
+    from jarvis import glassface_media_stream as stream
+
+    focus = {"screen": "terminal", "session": "desktop:surf-B", "identity": "id-B", "binding": "bind-B"}
+    pending = threading.Event()
+    spoken = []
+
+    class Provider:
+        def __init__(self):
+            self.events = asyncio.Queue()
+            self.mic = 0
+
+        async def send(self, message):
+            event = json.loads(message)
+            kind = event["type"]
+            if kind == "session.start":
+                self.events.put_nowait({"type": "session.started"})
+            elif kind == "session.thinking.append":
+                assert "Launcher work" in event["content"]
+                self.events.put_nowait({"type": "error", "client_event_id": event["event_id"]})
+                self.events.put_nowait({"type": "input_audio_buffer.speech_started"})
+                self.events.put_nowait(timed("fixture open", 0, 1, "started", "output"))
+            elif kind == "session.input_audio.append":
+                self.mic += 1
+                if self.mic == 7:
+                    self.events.put_nowait(timed("Take me home.", 240, 480, "home"))
+                elif self.mic == 9:
+                    self.events.put_nowait({"type": "input_audio_buffer.speech_stopped"})
+            elif kind == "session.commentary.append":
+                spoken.append(event["content"])
+                pending.set()
+            elif kind == "session.close":
+                self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 15}})
+
+        async def recv(self):
+            return json.dumps(await self.events.get())
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield Provider()
+
+    monkeypatch.setattr(stream, "connect", connection)
+    _, headers = key(client, [routes.SCOPE])
+    ticket = client.post(ROOT + "/tickets", headers=headers, json={**BODY, "view": {"screen": "home"}}).json()
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": ticket["ticket"]})
+        assert native.receive_json() == {"type": "ready", "screenContext": True}
+        native.send_json(
+            {"type": "view", **focus, "label": "Launcher work", "summary": "Scope the launcher."}
+        )
+        assert native.receive_json()["text"] == "fixture open"
+        native.send_json({"type": "decision", "label": "Tests"})
+        native.send_json({"type": "decision", "label": "Tests"})
+        for _ in range(9):
+            native.send_bytes(b"\xff" * 800)
+            time.sleep(0.085)
+        assert not pending.is_set()
+        assert native.receive_json()["text"] == "Take me home."
+        action = native.receive_json()
+        proof = client.post(ROOT + "/verify", headers=headers, json={"proof": action["proof"]}).json()
+        assert proof["view"] == focus and proof["text"] == "Take me home"
+        for _ in range(20):
+            native.send_bytes(b"\xff" * 800)
+            if pending.wait(0.085):
+                break
+        assert pending.is_set() and len(spoken) == 1 and "Tests" in spoken[0]
+        pending.clear()
+        native.send_json({"type": "receipt", "text": "Two terminals match."})
+        for _ in range(20):
+            native.send_bytes(b"\xff" * 800)
+            if pending.wait(0.085):
+                break
+        assert pending.is_set() and len(spoken) == 2 and "Two terminals match." in spoken[1]
+        native.send_json({"type": "stop"})
+        assert native.receive_json()["reason"] == "ended"
 
 
 @pytest.mark.parametrize("interrupt", ["hangup", "speak", "revoke"])

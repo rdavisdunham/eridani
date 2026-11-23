@@ -92,16 +92,22 @@ def consume(ticket):
     return identity, body
 
 
-def attest(identity, focus, text):
+def attest(identity, focus, action, text):
     operation = str(uuid4())
     assertion = {
         "purpose": "glass-live-utterance-v1",
+        "action": action,
         "credential": identity,
         "focus": focus,
         "text": text,
         "operation": operation,
     }
-    return {"type": "utterance", "operation": operation, "proof": work_crypto.seal(assertion)}
+    return {
+        "type": "utterance",
+        "action": action,
+        "operation": operation,
+        "proof": work_crypto.seal(assertion),
+    }
 
 
 def verify(identity, proof):
@@ -171,11 +177,11 @@ async def native_voice(peer: WebSocket):
         # Allow for setup, the media deadline, graceful close and billing rounding.
         async with leased_slot(identity, settings.live_model, usage, LIVE_SECONDS + 20) as recheck:
 
-            async def proof(words):
+            async def proof(action, words):
                 if not body["focus"]:
                     return None
                 await recheck()
-                return attest(identity, body["focus"], words)
+                return attest(identity, body["focus"], action, words)
 
             await glassface_media_stream.bridge(
                 peer,

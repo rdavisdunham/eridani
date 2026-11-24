@@ -824,6 +824,9 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
             {"id": "terminals", "label": "Terminals", "parent": "home"},
             {"id": "quiet_hours", "label": "Quiet hours", "parent": "home"},
         ]
+    quiet_confirmation = phrase == "Bring up quiet hours."
+    if quiet_confirmation:
+        monkeypatch.setattr(stream, "RESULT_SPEECH_WAIT", 0.15)
     missing_receipt = phrase == "Could you pull up my quiet time?"
     rejection = phrase == "Take me to the terminal page."
     change_during_lookup = phrase == "Show me where I can mute alerts."
@@ -893,7 +896,7 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                     if rejection:
                         asyncio.create_task(self.stale_tail())
                 loop.call_later(
-                    2.0 if rejection else 1.3,
+                    3.0 if quiet_confirmation else 2.0 if rejection else 1.3,
                     self.events.put_nowait,
                     timed("fixture boundary", 300, 400, "end", "input" if tree else "output"),
                 )
@@ -965,7 +968,12 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         elif change_during_lookup:
             assert returned.wait(1) and "screen changed" in results[0]["content"]
         elif expected:
-            assert returned.wait(1) and len(results) == 1
+            assert returned.wait(1)
+            late_link = phrase == "What did I last ask?" and delay is not None
+            assert len(results) == (2 if quiet_confirmation or late_link else 1)
+            if late_link or quiet_confirmation:
+                assert results[1]["content"] == results[0]["content"]
+                assert results[1]["delegation_id"] == ("del-1" if late_link else None)
             expected_delegation = None if delay is None or phrase == "What did I last ask?" else "del-1"
             if refused:
                 assert refused[0]["delegation_id"] == expected_delegation
@@ -1245,3 +1253,17 @@ def test_screen_suffix_supersedes_tentative_read_or_list(client, monkeypatch, no
     proof = client.post(ROOT + "/verify", headers=headers, json={"proof": claims[0]["proof"]}).json()
     assert proof["text"] == "Show me the " + noun + " screen."
     assert proof["tool"]["value"] == "terminals"
+
+
+def test_near_silent_mulaw_dither_ends_a_speculative_reply():
+    import asyncio
+    from jarvis.glassface_media_stream import HeadsetPlayback, RATE
+
+    async def run():
+        playback = HeadsetPlayback()
+        playback.withheld(bytes(80))
+        assert playback.withheld_until > 0
+        playback.withheld(bytes([0xfe, 0x7e]) * (RATE // 4))
+        assert playback.withheld_until == 0
+
+    asyncio.run(run())

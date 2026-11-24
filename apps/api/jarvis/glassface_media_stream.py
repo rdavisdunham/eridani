@@ -322,6 +322,7 @@ class HeadsetPlayback:
         self.withheld_until = 0
         self.quiet_samples = 0
         self.audible = False
+        self.queued_voice = self.voice_end = 0
 
     def hold(self):
         if self.held is None:
@@ -351,7 +352,6 @@ class HeadsetPlayback:
             self.withheld_until = 0
 
     def add(self, raw):
-        audible = bool(raw.strip(b"\x7f\xff"))
         if self.held is not None:
             self.withheld(raw)
             if not self.held_overflow:
@@ -362,26 +362,32 @@ class HeadsetPlayback:
                     self.held.extend(raw[i:i + MAX_FRAME] for i in range(0, len(raw), MAX_FRAME))
                     self.held_bytes += len(raw)
             return
-        if not audible and (
-            not self.audible or not self.queued and self.cursor <= asyncio.get_running_loop().time()
-        ):
-            return  # A quiet provider clock need not wake the bone-conduction speaker.
+        # Once the last word drains, idle PCMU frames must not keep the
+        # playback clock alive. Preserve pauses already queued between words.
+        if 1 not in raw.translate(VOICE_ACTIVITY) and not self.speaking():
+            return
         if self.queued + len(raw) > 8 * RATE:
             raise live.LiveFailure("Headset playback is too far behind")
         for offset in range(0, len(raw), MAX_FRAME):
             frame = raw[offset : offset + MAX_FRAME]
             try:
-                self.frames.put_nowait((self.generation, frame))
+                voice_samples = len(frame.translate(VOICE_ACTIVITY).rstrip(b"\0"))
+                self.frames.put_nowait((self.generation, frame, voice_samples))
             except asyncio.QueueFull:
                 raise live.LiveFailure("Too many queued audio frames") from None
             self.queued += len(frame)
-        self.audible |= audible
+            if voice_samples:
+                self.queued_voice += 1
+                self.audible = True
+
+    def speaking(self):
+        return bool(self.queued_voice or self.voice_end > asyncio.get_running_loop().time())
 
     def discard(self):
         self.discard_held()
         self.withheld_until = 0
         self.generation += 1
-        self.cursor = self.queued = 0
+        self.cursor = self.queued = self.queued_voice = self.voice_end = 0
         self.audible = False
         while not self.frames.empty():
             self.frames.get_nowait()
@@ -395,7 +401,7 @@ class HeadsetPlayback:
     async def play(self, peer, played):
         clock = asyncio.get_running_loop().time
         while True:
-            generation, frame = await self.frames.get()
+            generation, frame, voice_samples = await self.frames.get()
             self.queued -= len(frame)
             try:
                 duration = len(frame) / RATE
@@ -405,7 +411,11 @@ class HeadsetPlayback:
                     await asyncio.sleep(wait)
                 async with self.write:
                     if generation == self.generation:
-                        self.cursor = max(self.cursor, clock()) + duration
+                        start = max(self.cursor, clock())
+                        self.cursor = start + duration
+                        if voice_samples:
+                            self.queued_voice -= 1
+                            self.voice_end = start + voice_samples / RATE + .4
                         played(frame)
                         await asyncio.wait_for(peer.send_bytes(frame), 2)
             finally:
@@ -1089,10 +1099,11 @@ async def bridge(
                     span = timing(event)
                     if (
                         user
-                        and downlink.audible
-                        and (downlink.queued or downlink.cursor + 0.4 > clock())
+                        and downlink.speaking()
                         and interruption.recognizes(delta, span, playback.caption)
                     ):
+                        if trace:
+                            trace.event("playback-clear", source="wearer-caption", queued_bytes=downlink.queued)
                         await downlink.clear(peer)
                     # Provider timestamps start at session creation. Expose the approximate clock
                     # relative to the first actual mic write; there is no server-injected silence.
@@ -1198,6 +1209,8 @@ async def bridge(
                     # Live owns turn taking. Flush only on its explicit playback command.
                     # Speech onset and speculative captions can come from a cough or a breath.
                     if downlink.audible:
+                        if trace:
+                            trace.event("playback-clear", source="provider", queued_bytes=downlink.queued)
                         await downlink.clear(peer)
                     else:
                         downlink.discard()

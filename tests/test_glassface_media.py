@@ -398,6 +398,47 @@ def test_read_only_voice_controls_preserve_the_live_session_handle(
 
 
 @pytest.mark.asyncio
+async def test_idle_codec_clock_expires_after_voice_even_with_a_playback_backlog():
+    import asyncio
+
+    from jarvis.glassface_media_stream import HeadsetPlayback
+
+    loop = asyncio.get_running_loop()
+    playback = HeadsetPlayback()
+    voice = b"a" * 800
+    quiet = bytes([0xff, 0x7f, 0xfe, 0x7e]) * 200
+    delivered = []
+
+    class Peer:
+        async def send_bytes(self, raw):
+            delivered.append(raw)
+
+    # Bursty audio must retain the pause between the two words.
+    for frame in (voice, quiet, quiet, voice):
+        playback.add(frame)
+    assert playback.speaking()
+    player = asyncio.create_task(playback.play(Peer(), lambda raw: None))
+    try:
+        await asyncio.wait_for(playback.frames.join(), 1)
+        assert delivered == [voice, quiet, quiet, voice]
+        assert playback.speaking()
+        # Simulate the interval between the last real speech and the wearer
+        # caption. The transport cursor can still be ahead on quiet clock frames.
+        playback.voice_end -= 4.5
+        playback.cursor = loop.time() + .35
+        assert not playback.speaking()
+        playback.add(quiet)
+        assert playback.frames.empty()
+        playback.add(voice)
+        assert playback.speaking()
+        playback.discard()
+        assert not playback.speaking()
+    finally:
+        player.cancel()
+        await asyncio.gather(player, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_native_playback_paces_bursts_and_clears_old_frames_before_resuming():
     import asyncio
 
@@ -546,7 +587,7 @@ def test_a_full_provider_burst_does_not_block_interruption_or_grant_checks(clien
                     self.events.put_nowait(
                         {
                             "type": "session.output_audio.delta",
-                            "delta": base64.b64encode(b"x" * 32_000).decode(),
+                            "delta": base64.b64encode(b"a" * 32_000).decode(),
                         }
                     )
                 else:

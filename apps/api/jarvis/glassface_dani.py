@@ -51,12 +51,12 @@ class Turn(Input):
     history: Annotated[list[Exchange], Field(max_length=4)] = Field(default_factory=list)
 
 
-async def read_body(request, schema=Turn):
+async def read_body(request, schema=Turn, *, limit=MAX_REQUEST_BYTES):
     if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
         raise DomainError("INVALID_ARGUMENT", "Use application/json.", 415)
     raw = bytearray()
     async for chunk in request.stream():
-        if len(raw) + len(chunk) > MAX_REQUEST_BYTES:
+        if len(raw) + len(chunk) > limit:
             raise DomainError("INVALID_ARGUMENT", "Glass turn exceeds its size limit.", 413)
         raw.extend(chunk)
     try:
@@ -172,6 +172,7 @@ def status(identity: Bot):
     return JSONResponse(
         {
             "ready": True,
+            "glassDiagnostics": True,
             "model": settings.live_model,
             "live": native,
             **({"screenContext": True, "screenControls": True, "navigationTree": True} if native else {}),

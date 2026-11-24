@@ -808,7 +808,7 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     }
     tree_results = {
         "Where do I quiet notifications?": ("navigate", "quiet_hours"),
-        "Take me to the terminal page.": ("navigate", "terminals"),
+        "Take me to the terminal page.": None,
         "Bring me somewhere quiet.": ("navigate", "invented_page"),
         "I see the quiet hours screen.": ("none", ""),
         "Show me where I can mute alerts.": ("navigate", "quiet_hours"),
@@ -829,10 +829,13 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     change_during_lookup = phrase == "Show me where I can mute alerts."
     started, changed = threading.Event(), threading.Event()
     result_text = "A draft is open. Screen stayed here." if rejection else "Operation completed"
+    tail_in_flight = threading.Event()
+    heard = []
     returned = threading.Event()
     resolved = []
     results = []
     displays = []
+    refused = []
 
     def infer(owner, path, body, *args, **kwargs):
         assert path == "responses" and kwargs["trace_content"] is False
@@ -858,6 +861,11 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         def __init__(self):
             self.events = asyncio.Queue()
 
+        async def stale_tail(self):
+            await asyncio.to_thread(tail_in_flight.wait, 3)
+            await asyncio.sleep(.06)
+            self.events.put_nowait({"type": "session.output_audio.delta", "delta": "BQUF"})
+
         async def send(self, raw):
             event = json.loads(raw)
             kind = event["type"]
@@ -882,8 +890,10 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                     loop.call_later(
                         0.15, self.events.put_nowait, timed("Already opened!", 200, 260, "guess", "output")
                     )
+                    if rejection:
+                        asyncio.create_task(self.stale_tail())
                 loop.call_later(
-                    1.3,
+                    2.0 if rejection else 1.3,
                     self.events.put_nowait,
                     timed("fixture boundary", 300, 400, "end", "input" if tree else "output"),
                 )
@@ -892,8 +902,15 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                 changed.set()
                 self.events.put_nowait(timed("view acknowledged", 600, 650, str(len(displays)), "output"))
             elif kind == "session.commentary.append":
+                if phrase == "Enter the Glassface folder." and not refused:
+                    refused.append(event)
+                    self.events.put_nowait({"type": "error", "error": {"client_event_id": event["event_id"]}})
+                    return
                 results.append(event)
+                self.events.put_nowait({"type": "session.commentary.appended", "client_event_id": event["event_id"]})
                 returned.set()
+                if rejection:
+                    self.events.put_nowait({"type": "session.output_audio.delta", "delta": "BwcH"})
             elif kind == "session.close":
                 self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 15}})
 
@@ -916,7 +933,11 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         assert native.receive_json()["type"] == "ready"
         native.send_bytes(bytes(800))
         while True:
-            message = native.receive_json()
+            wire = native.receive()
+            if wire.get("bytes") is not None:
+                heard.append(wire["bytes"])
+                continue
+            message = json.loads(wire["text"])
             assert message.get("text") != "Already opened!"
             if change_during_lookup and message.get("text") == phrase:
                 assert started.wait(2)
@@ -934,6 +955,8 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                     native.send_json({"type": "receipt", "text": "Uncorrelated confirmation"})
                     continue
                 native.send_json({"type": "receipt", "operation": message["operation"], "text": result_text})
+                if rejection:
+                    tail_in_flight.set()
                 native.send_json(
                     {"type": "receipt", "operation": message["operation"], "text": "Duplicate result"}
                 )
@@ -944,8 +967,16 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         elif expected:
             assert returned.wait(1) and len(results) == 1
             expected_delegation = None if delay is None or phrase == "What did I last ask?" else "del-1"
+            if refused:
+                assert refused[0]["delegation_id"] == expected_delegation
+                assert results[0]["event_id"] != refused[0]["event_id"]
+                expected_delegation = None  # Result delivery retried as session context; action ran once.
             assert results[0]["delegation_id"] == expected_delegation
             assert json.dumps(result_text) in results[0]["content"]
+            if rejection:
+                if not heard:
+                    heard.append(native.receive_bytes())
+                assert heard == [b"\x07" * 3]  # The next complete reply, with no piece of the guessed reply.
         if expected and expected.get("command") == "set_volume":
             for page in ("volume", "help"):
                 native.send_json(
@@ -961,7 +992,10 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
             assert displays[0]["summary"] == "Active volume: Medium. Earphone amp: 15 of 15."
             assert "summary" not in displays[1]
         native.send_json({"type": "stop"})
-        assert native.receive_json()["reason"] == "ended"
+        final = native.receive_json()
+        if rejection and final == {"type": "clear"}:
+            final = native.receive_json()
+        assert final["reason"] == "ended"
     if not expected:
         assert not claims
         return
@@ -1031,14 +1065,37 @@ async def test_unconfirmed_audio_stays_bounded_until_released():
     from jarvis.glassface_media_stream import RATE, HeadsetPlayback
 
     playback = HeadsetPlayback()
-    playback.may_play.clear()
+    playback.hold()
     playback.add(bytes(8 * RATE))
     playback.add(bytes(800))
-    assert playback.queued == 8 * RATE
-    playback.discard()
-    playback.may_play.set()
+    assert playback.held_bytes == 8 * RATE and playback.queued == 0
+    playback.release()
+    assert playback.queued == 0  # Never play only the prefix of an overflowing speculative reply.
     playback.add(bytes(800))
     assert playback.queued == 800
+
+
+@pytest.mark.asyncio
+async def test_tool_gate_preserves_previous_speech_and_discards_only_speculation():
+    from jarvis.glassface_media_stream import HeadsetPlayback
+
+    playback = HeadsetPlayback()
+    playback.add(b"previous sentence ending")
+    playback.hold()
+    playback.add(b"guessed confirmation")
+    playback.discard_held()
+    assert playback.frames.get_nowait()[1] == b"previous sentence ending"
+    assert playback.frames.empty()
+
+
+def test_tool_result_parts_fit_provider_limit_and_preserve_text():
+    import json
+    from jarvis.glassface_media_stream import quoted_parts
+
+    raw = ('\\"' + "漢✨" + '\n') * 400
+    parts = list(quoted_parts(raw))
+    assert len(parts) > 1 and all(len(p.encode()) <= 322 for p in parts)
+    assert "".join(json.loads(p) for p in parts) == raw
 
 
 def test_semantic_navigation_runs_the_newest_complete_utterance_after_a_slow_prefix(client, monkeypatch):

@@ -101,6 +101,11 @@ def parse(words, view=None):
     if screen:
         if view is not None and "destinations" in view:
             exact = [node["id"] for node in view["destinations"] if node["label"].casefold() == screen[1]]
+            if not exact and (page := re.fullmatch(r"(.+) (?:screen|page|view)", screen[1])):
+                # "The terminal screen" identifies the advertised Terminals page.
+                # Keep ambiguous labels in the semantic path and never infer a new destination.
+                labels = {page[1], page[1] + "s"}
+                exact = [node["id"] for node in view["destinations"] if node["label"].casefold() in labels]
             if len(exact) == 1 and "open" in view.get("actions", []):
                 return {"name": "navigate", "command": "open", "value": exact[0]}
         elif screen[1] in SCREENS:
@@ -151,11 +156,13 @@ def resolve_view_intent(identity, words, screen):
     )
     guidance = ""
     if destinations:
-        schema["properties"]["name"]["enum"].extend(["navigate", "terminal", "unavailable"])
+        schema["properties"]["name"]["enum"].extend(["navigate", "terminal", "unavailable", "brief"])
         context["destinations"] = screen["destinations"]
         context["page"] = screen.get("page")
         guidance = (
-            " One additional supported action is navigation. If the wearer wants to see a screen, "
+            " Choose brief for cross-terminal analysis: comparing two workstreams, summarizing multiple recent sessions, "
+            "or prioritizing which sessions need the wearer and why. A plain list of names uses list. "
+            "Set query empty for brief. Another supported action is navigation. If the wearer wants to see a screen, "
             "or asks where on the device to find something or change a setting, choose navigate and put "
             "the single matching advertised destination ID in query. Infer its meaning from label and parent. "
             "Only open a page. Do not infer navigation from a statement about what is displayed, a quotation, "
@@ -195,6 +202,8 @@ def resolve_view_intent(identity, words, screen):
     if not isinstance(parsed, dict):
         return None
     name, query = parsed.get("name"), parsed.get("query")
+    if name == "brief" and destinations and query == "":
+        return {"name": "list", "detail": "brief"}
     if name == "navigate" and isinstance(query, str) and query in destinations:
         return {"name": "navigate", "command": "open", "value": query}
     if name in {"navigate", "unavailable"} and destinations:

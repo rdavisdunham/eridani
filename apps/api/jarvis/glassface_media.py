@@ -1,10 +1,13 @@
 """Hands-free Glass audio admission and same-credential verification of spoken instructions."""
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import re
+
+import httpx
 from contextlib import suppress
 from uuid import uuid4
 
@@ -15,7 +18,7 @@ from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from websockets.exceptions import WebSocketException
 
-from . import glassface_live, glassface_media_stream, glassface_tools, work_crypto
+from . import glassface_live, glassface_media_stream, glassface_tools, glassface_trace, work_crypto
 from .db import session_scope
 from .domain import DomainError
 from .external_routes import Bot
@@ -31,7 +34,13 @@ handshakes = set()
 NO_STORE = {"Cache-Control": "no-store"}
 
 
+class Diagnostics(Input):
+    project: glassface_trace.Project
+    trace_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
 class TicketRequest(Input):
+    diagnostics: Diagnostics | None = None
     terminal: Terminal
     focus: str = Field(max_length=160)
     view: glassface_media_stream.View | None = None
@@ -48,13 +57,18 @@ def invalid():
 def issue(identity, body):
     authorized_settings(identity)
     work_crypto.cipher()  # Can issue the corresponding terminal proof.
+    payload = body.model_dump(exclude_none=True, exclude={"diagnostics"})
+    if body.diagnostics:
+        profile = body.diagnostics
+        payload["diagnostics"] = {"trace_id": profile.trace_id, "project": {
+            **profile.project.model_dump(exclude={"secret"}), "secret": profile.project.secret.get_secret_value()}}
     secret = Fernet.generate_key()
     digest = hashlib.sha256(secret).hexdigest()
     with session_scope() as db:
         granted(db, identity)  # Serializes issuance, redemption and revocation across replicas.
         db.get(BotCredential, identity).glass_live_ticket = {
             "digest": digest,
-            "context": Fernet(secret).encrypt(body.model_dump_json(exclude_none=True).encode()).decode(),
+            "context": Fernet(secret).encrypt(json.dumps(payload).encode()).decode(),
         }
     # Only the client holds the per-ticket key that opens the temporary terminal context.
     return identity + "." + secret.decode().rstrip("=")
@@ -182,6 +196,7 @@ async def native_voice(peer: WebSocket):
     handshake = object()
     handshakes.add(handshake)
     admitted = None
+    trace = None
     reason, code = "ended", 1000
     try:
         await peer.accept()
@@ -218,6 +233,10 @@ async def native_voice(peer: WebSocket):
                 await recheck()
                 return attest(identity, body["focus"], action, words, view, resolved_tool=resolved_tool)
 
+            diagnostics = body.pop("diagnostics", None)
+            if diagnostics:
+                profile = Diagnostics.model_validate(diagnostics)
+                trace = glassface_trace.Session(profile.project, profile.trace_id)
             await glassface_media_stream.bridge(
                 peer,
                 settings.live_model,
@@ -228,6 +247,8 @@ async def native_voice(peer: WebSocket):
                 proof,
                 LIVE_SECONDS,
                 view=body.get("view"),
+                **({"trace": trace} if trace else {}),
+                **({"worker_identity": identity} if (body.get("view") or {}).get("destinations") else {}),
                 resolve_intent=lambda words, scene: run_in_threadpool(
                     glassface_tools.resolve_view_intent, identity, words, scene
                 ),
@@ -242,9 +263,40 @@ async def native_voice(peer: WebSocket):
         reason, code = "invalid_stream", 1008
     finally:
         handshakes.discard(handshake)
+        if trace:
+            trace.event("session-end", reason=reason, close_code=code)
+            trace.flush()
         if admitted is not None:
             active.discard(admitted)
         with suppress(RuntimeError, OSError, WebSocketDisconnect):
             async with asyncio.timeout(2):
                 await peer.send_json({"type": "ended", "reason": reason})
                 await peer.close(code=code)
+
+
+class GatewayTrace(Diagnostics):
+    name: str = Field(pattern=r"^[a-z][a-z0-9.-]{0,63}$")
+    inputs: dict
+    outputs: dict
+    wav: str | None = Field(default=None, max_length=12000000)
+
+
+@router.post("/api/glassface/dani/diagnostics")
+async def gateway_trace(request: Request, identity: Bot):
+    await run_in_threadpool(authorized_settings, identity)
+    data = await read_body(request, GatewayTrace, limit=12100000)
+    tracks = {}
+    if data.wav:
+        try:
+            raw = base64.b64decode(data.wav, validate=True)
+        except ValueError:
+            raise DomainError("INVALID_ARGUMENT", "Invalid diagnostic audio.", 422) from None
+        if raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+            raise DomainError("INVALID_ARGUMENT", "Expected diagnostic WAV audio.", 422)
+        tracks["dictation"] = raw
+    try:
+        await run_in_threadpool(glassface_trace.upload, data.project, data.trace_id,
+                                "Glass · " + data.name, data.inputs, data.outputs, tracks)
+    except (httpx.HTTPError, ValueError, KeyError):
+        raise DomainError("DIAGNOSTICS_UNAVAILABLE", "Dedicated project did not acknowledge export.", 502) from None
+    return JSONResponse({"accepted": True}, headers=NO_STORE)

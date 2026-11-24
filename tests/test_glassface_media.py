@@ -1186,3 +1186,62 @@ def test_semantic_navigation_runs_the_newest_complete_utterance_after_a_slow_pre
         "command": "open",
         "value": "volume",
     }
+
+
+@pytest.mark.parametrize("noun", ["terminal", "terminals"])
+def test_screen_suffix_supersedes_tentative_read_or_list(client, monkeypatch, noun):
+    import asyncio
+    import json
+    from contextlib import asynccontextmanager
+    from jarvis import glassface_media_stream as stream
+
+    view = {"screen": "home", "page": "home", "actions": ["open"], "destinations": [
+        {"id": "home", "label": "Home", "parent": ""},
+        {"id": "terminals", "label": "Terminals", "parent": "home"}]}
+
+    class Provider:
+        def __init__(self):
+            self.events = asyncio.Queue()
+            self.spoken = False
+
+        async def send(self, raw):
+            kind = json.loads(raw)["type"]
+            if kind == "session.start":
+                self.events.put_nowait({"type": "session.started"})
+            if kind == "session.input_audio.append" and not self.spoken:
+                self.spoken = True
+                self.events.put_nowait(timed("Show me the " + noun, 20, 80, "prefix", "input"))
+                # XE-C reproduced this with the noun arriving as its own delta.
+                loop = asyncio.get_running_loop()
+                loop.call_later(1.1, self.events.put_nowait, timed(" screen.", 85, 170, "suffix", "input"))
+                loop.call_later(2.9, self.events.put_nowait, timed("boundary", 180, 230, "boundary", "input"))
+            if kind == "session.close":
+                self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 4}})
+
+        async def recv(self):
+            return json.dumps(await self.events.get())
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield Provider()
+
+    monkeypatch.setattr(stream, "connect", connection)
+    _, headers = key(client, [routes.SCOPE])
+    ticket = client.post(ROOT + "/tickets", headers=headers, json={**BODY, "view": view}).json()["ticket"]
+    claims = []
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": ticket})
+        assert native.receive_json()["type"] == "ready"
+        native.send_bytes(bytes(800))
+        while True:
+            event = native.receive_json()
+            if event.get("text") == "boundary":
+                break
+            if event["type"] == "utterance":
+                claims.append(event)
+        native.send_json({"type": "stop"})
+        assert native.receive_json()["reason"] == "ended"
+    assert [claim["action"] for claim in claims] == ["navigate"]
+    proof = client.post(ROOT + "/verify", headers=headers, json={"proof": claims[0]["proof"]}).json()
+    assert proof["text"] == "Show me the " + noun + " screen."
+    assert proof["tool"]["value"] == "terminals"

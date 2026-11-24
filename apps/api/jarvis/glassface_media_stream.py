@@ -80,7 +80,7 @@ class View(BaseModel):
     page: str | None = Field(default=None, min_length=1, max_length=64)
     selection: str | None = Field(default=None, max_length=160)
     actions: (
-        list[Literal["open", "back", "next", "previous", "select", "enter_folder", "set_volume", "start"]]
+        list[Literal["open", "back", "next", "previous", "select", "enter_folder", "set_volume", "set_voice_model", "start"]]
         | None
     ) = Field(default=None, max_length=16)
 

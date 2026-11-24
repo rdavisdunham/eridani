@@ -151,19 +151,25 @@ async def leased_slot(identity, model, usage, allowance_seconds=60):
             await asyncio.shield(loop.run_in_executor(worker, release))
 
 
-def authorized_settings(identity):
+def authorized_settings(identity, provider: Literal["openai", "gemini", "any"] = "openai"):
     with session_scope() as db:
         granted(db, identity)
     require_external_services()
     settings = get_settings()
-    if not settings.openai_api_key:
+    if provider == "gemini":
+        if not settings.gemini_api_key:
+            raise DomainError("INTEGRATION_UNAVAILABLE", "Hosted Gemini Live is unavailable.", 503)
+    elif provider == "any":
+        if not (settings.openai_api_key or settings.gemini_api_key):
+            raise DomainError("INTEGRATION_UNAVAILABLE", "Hosted Dani voice is unavailable.", 503)
+    elif not settings.openai_api_key:
         raise DomainError("INTEGRATION_UNAVAILABLE", "Hosted GPT-Live is unavailable.", 503)
     return settings
 
 
 @router.get("/api/glassface/dani/status")
 def status(identity: Bot):
-    settings = authorized_settings(identity)
+    settings = authorized_settings(identity, provider="any")
     try:
         work_crypto.cipher()
         native = True
@@ -176,6 +182,7 @@ def status(identity: Bot):
             "model": settings.live_model,
             "live": native,
             **({"screenContext": True, "screenControls": True, "navigationTree": True} if native else {}),
+            **({"geminiLive": True} if native and settings.gemini_api_key else {}),
         },
         headers={"Cache-Control": "no-store"},
     )

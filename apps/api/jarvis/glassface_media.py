@@ -6,11 +6,11 @@ import hashlib
 import hmac
 import json
 import re
-
-import httpx
 from contextlib import suppress
+from typing import Literal
 from uuid import uuid4
 
+import httpx
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -18,7 +18,14 @@ from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from websockets.exceptions import WebSocketException
 
-from . import glassface_live, glassface_media_stream, glassface_tools, glassface_trace, work_crypto
+from . import (
+    glassface_gemini_stream,
+    glassface_live,
+    glassface_media_stream,
+    glassface_tools,
+    glassface_trace,
+    work_crypto,
+)
 from .db import session_scope
 from .domain import DomainError
 from .external_routes import Bot
@@ -39,11 +46,17 @@ class Diagnostics(Input):
     trace_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+class VoiceSelection(Input):
+    model: Literal["gpt-live-1", "gemini-3.8-live-extended-thinking", "gemini-3.8-live"]
+    thinking: Literal["low", "medium", "high"] | None = None
+
+
 class TicketRequest(Input):
     diagnostics: Diagnostics | None = None
     terminal: Terminal
     focus: str = Field(max_length=160)
     view: glassface_media_stream.View | None = None
+    voice: VoiceSelection | None = None
 
 
 class ProofRequest(Input):
@@ -54,14 +67,24 @@ def invalid():
     return DomainError("NOT_AUTHORIZED", "The Glass voice credential is invalid or has expired.", 401)
 
 
+def _provider_for_model(model: str | None) -> Literal["openai", "gemini"]:
+    return "gemini" if isinstance(model, str) and model.startswith("gemini-") else "openai"
+
+
 def issue(identity, body):
-    authorized_settings(identity)
+    requested_model = body.voice.model if body.voice else None
+    authorized_settings(identity, provider=_provider_for_model(requested_model) if requested_model else "any")
     work_crypto.cipher()  # Can issue the corresponding terminal proof.
     payload = body.model_dump(exclude_none=True, exclude={"diagnostics"})
     if body.diagnostics:
         profile = body.diagnostics
-        payload["diagnostics"] = {"trace_id": profile.trace_id, "project": {
-            **profile.project.model_dump(exclude={"secret"}), "secret": profile.project.secret.get_secret_value()}}
+        payload["diagnostics"] = {
+            "trace_id": profile.trace_id,
+            "project": {
+                **profile.project.model_dump(exclude={"secret"}),
+                "secret": profile.project.secret.get_secret_value(),
+            },
+        }
     secret = Fernet.generate_key()
     digest = hashlib.sha256(secret).hexdigest()
     with session_scope() as db:
@@ -107,7 +130,70 @@ def consume(ticket):
     return identity, body
 
 
-def attest(identity, focus, action, text, view=None, *, resolved_tool=None):
+def _validate_structured_tool(action: str, tool: dict, view: dict | None) -> bool:
+    if not isinstance(tool, dict) or tool.get("name") != action or not view or "actions" not in view:
+        return False
+    actions = view.get("actions") or []
+    if action == "list":
+        return set(tool) <= {"name", "detail"} and tool.get("detail") in {None, "brief"}
+    if action == "read":
+        q = tool.get("query")
+        return set(tool) <= {"name", "query"} and (q is None or (isinstance(q, str) and len(q) <= 160))
+    if action == "find":
+        q = tool.get("query")
+        return set(tool) == {"name", "query"} and isinstance(q, str) and 0 < len(q) <= 160
+    if action == "start":
+        if "start" not in actions or tool.get("harness") not in {"claude", "codex"}:
+            return False
+        folder = tool.get("folder")
+        if not isinstance(folder, str) or not 0 < len(folder) <= 512:
+            return False
+        return set(tool) <= {"name", "folder", "harness", "model", "effort"} and all(
+            isinstance(tool[k], str) and len(tool[k]) <= 160
+            for k in ("model", "effort")
+            if k in tool
+        )
+    if action == "navigate":
+        cmd = tool.get("command")
+        val = tool.get("value", "")
+        if (
+            cmd not in {
+                "open",
+                "back",
+                "next",
+                "previous",
+                "select",
+                "enter_folder",
+                "set_volume",
+                "set_voice_model",
+            }
+            or cmd not in actions
+            or not set(tool) <= {"name", "command", "value"}
+            or not isinstance(val, str)
+            or len(val) > 160
+        ):
+            return False
+        if cmd == "open" and "destinations" in view:
+            return any(node["id"] == val for node in view["destinations"])
+        if cmd in {"select", "enter_folder"} and val and not view.get("choices"):
+            return False
+        return True
+    if action == "send":
+        msg = tool.get("message")
+        target = tool.get("target", "")
+        if (
+            not set(tool) <= {"name", "message", "target"}
+            or not isinstance(msg, str)
+            or not 0 < len(msg) <= 2400
+            or not isinstance(target, str)
+            or len(target) > 160
+        ):
+            return False
+        return view.get("screen") == "terminal" or bool(target.strip())
+    return False
+
+
+def attest(identity, focus, action, text, view=None, *, resolved_tool=None, structured_tool=None):
     operation = str(uuid4())
     assertion = {
         "purpose": "glass-live-utterance-v1",
@@ -117,31 +203,36 @@ def attest(identity, focus, action, text, view=None, *, resolved_tool=None):
         "text": text,
         "operation": operation,
     }
-    if resolved_tool is not None and action not in {"list", "read", "navigate"}:
-        return None
-    if action in {"list", "read", "navigate", "start"}:
-        tool = glassface_tools.parse(text, view)
-        if resolved_tool:
-            if action in {"list", "read"} or (
-                action == "navigate"
-                and resolved_tool.get("command") == "open"
-                and set(resolved_tool) == {"name", "command", "value"}
-                and view
-                and "open" in view.get("actions", [])
-                and any(node["id"] == resolved_tool["value"] for node in view.get("destinations", []))
-            ):
-                tool = resolved_tool
-            else:
+    if structured_tool is not None:
+        if not _validate_structured_tool(action, structured_tool, view):
+            return None
+        assertion["tool"] = structured_tool
+    else:
+        if resolved_tool is not None and action not in {"list", "read", "navigate"}:
+            return None
+        if action in {"list", "read", "navigate", "start"}:
+            tool = glassface_tools.parse(text, view)
+            if resolved_tool:
+                if action in {"list", "read"} or (
+                    action == "navigate"
+                    and resolved_tool.get("command") == "open"
+                    and set(resolved_tool) == {"name", "command", "value"}
+                    and view
+                    and "open" in view.get("actions", [])
+                    and any(node["id"] == resolved_tool["value"] for node in view.get("destinations", []))
+                ):
+                    tool = resolved_tool
+                else:
+                    return None
+            if not tool or tool["name"] != action or not view or "actions" not in view:
                 return None
-        if not tool or tool["name"] != action or not view or "actions" not in view:
-            return None
-        if (
-            tool.get("command") in {"select", "enter_folder"}
-            and tool.get("value")
-            and not view.get("choices")
-        ):
-            return None
-        assertion["tool"] = tool
+            if (
+                tool.get("command") in {"select", "enter_folder"}
+                and tool.get("value")
+                and not view.get("choices")
+            ):
+                return None
+            assertion["tool"] = tool
     if view is not None:
         assertion["view"] = view
     proof = work_crypto.seal(assertion)
@@ -222,37 +313,64 @@ async def native_voice(peer: WebSocket):
             return
         admitted = identity
         active.add(identity)
-        settings = await run_in_threadpool(authorized_settings, identity)
+        voice_choice = body.pop("voice", None) or {}
+        base_settings = await run_in_threadpool(authorized_settings, identity, "any")
+        selected_model = voice_choice.get("model") or base_settings.live_model
+        provider = _provider_for_model(selected_model)
+        settings = await run_in_threadpool(authorized_settings, identity, provider)
         usage = glassface_live.Usage()
         # Allow for setup, the media deadline, graceful close and billing rounding.
-        async with leased_slot(identity, settings.live_model, usage, LIVE_SECONDS + 20) as recheck:
+        async with leased_slot(identity, selected_model, usage, LIVE_SECONDS + 20) as recheck:
 
-            async def proof(action, words, view=None, *, resolved_tool=None):
+            async def proof(action, words, view=None, *, resolved_tool=None, structured_tool=None):
                 if not body["focus"]:
                     return None
                 await recheck()
-                return attest(identity, body["focus"], action, words, view, resolved_tool=resolved_tool)
+                return attest(
+                    identity,
+                    body["focus"],
+                    action,
+                    words,
+                    view,
+                    resolved_tool=resolved_tool,
+                    structured_tool=structured_tool,
+                )
 
             diagnostics = body.pop("diagnostics", None)
             if diagnostics:
                 profile = Diagnostics.model_validate(diagnostics)
                 trace = glassface_trace.Session(profile.project, profile.trace_id)
-            await glassface_media_stream.bridge(
-                peer,
-                settings.live_model,
-                settings.openai_api_key,
-                body["terminal"],
-                usage,
-                recheck,
-                proof,
-                LIVE_SECONDS,
-                view=body.get("view"),
-                **({"trace": trace} if trace else {}),
-                **({"worker_identity": identity} if (body.get("view") or {}).get("destinations") else {}),
-                resolve_intent=lambda words, scene: run_in_threadpool(
-                    glassface_tools.resolve_view_intent, identity, words, scene
-                ),
-            )
+            if provider == "gemini":
+                await glassface_gemini_stream.bridge(
+                    peer,
+                    selected_model,
+                    settings.gemini_api_key,
+                    body["terminal"],
+                    usage,
+                    recheck,
+                    proof,
+                    LIVE_SECONDS,
+                    view=body.get("view"),
+                    thinking_level=voice_choice.get("thinking"),
+                    **({"trace": trace} if trace else {}),
+                )
+            else:
+                await glassface_media_stream.bridge(
+                    peer,
+                    selected_model,
+                    settings.openai_api_key,
+                    body["terminal"],
+                    usage,
+                    recheck,
+                    proof,
+                    LIVE_SECONDS,
+                    view=body.get("view"),
+                    **({"trace": trace} if trace else {}),
+                    **({"worker_identity": identity} if (body.get("view") or {}).get("destinations") else {}),
+                    resolve_intent=lambda words, scene: run_in_threadpool(
+                        glassface_tools.resolve_view_intent, identity, words, scene
+                    ),
+                )
     except DomainError as exc:
         reason, code = ("unavailable", 1013) if exc.status >= 429 else ("unauthorized", 1008)
     except TimeoutError:
@@ -283,7 +401,7 @@ class GatewayTrace(Diagnostics):
 
 @router.post("/api/glassface/dani/diagnostics")
 async def gateway_trace(request: Request, identity: Bot):
-    await run_in_threadpool(authorized_settings, identity)
+    await run_in_threadpool(authorized_settings, identity, "any")
     data = await read_body(request, GatewayTrace, limit=12100000)
     tracks = {}
     if data.wav:
@@ -295,8 +413,15 @@ async def gateway_trace(request: Request, identity: Bot):
             raise DomainError("INVALID_ARGUMENT", "Expected diagnostic WAV audio.", 422)
         tracks["dictation"] = raw
     try:
-        await run_in_threadpool(glassface_trace.upload, data.project, data.trace_id,
-                                "Glass · " + data.name, data.inputs, data.outputs, tracks)
+        await run_in_threadpool(
+            glassface_trace.upload,
+            data.project,
+            data.trace_id,
+            "Glass · " + data.name,
+            data.inputs,
+            data.outputs,
+            tracks,
+        )
     except (httpx.HTTPError, ValueError, KeyError):
         raise DomainError("DIAGNOSTICS_UNAVAILABLE", "Dedicated project did not acknowledge export.", 502) from None
     return JSONResponse({"accepted": True}, headers=NO_STORE)

@@ -120,6 +120,9 @@ def test_speaker_and_echo_tail_veto_reheard_commands():
     assert not playback.could_echo(phrase, 120, 300, 350)
     playback.caption = ""
     playback.audio(bytes(range(160)) * 5, 550, 800)
+    assert not playback.during_navigation(500, 780)  # Speaker started after these words.
+    assert playback.during_navigation(800, 860)
+    assert playback.during_navigation(1390, 1500)  # Actual echo tail.
     assert playback.could_echo(phrase, 450, 2000, 4500)  # Delayed caption for overlapping mic.
     assert playback.could_echo(phrase, 5800, 6500, 1600)  # Uncertain relative clocks.
     assert not playback.could_echo(phrase, 4000, 4300, 4600)
@@ -593,7 +596,17 @@ def test_a_full_provider_burst_does_not_block_interruption_or_grant_checks(clien
         assert delivered <= (22_000 if interrupt == "revoke" else 6400)
 
 
-def test_uncertain_provider_clock_preserves_voice_but_withholds_terminal_proof(client, monkeypatch):
+@pytest.mark.parametrize(
+    ("words", "action"),
+    [
+        ("Tell it to retry. Send that.", None),
+        ("Open this terminal.", None),
+        ("Take me home.", "home"),
+        ("Start a new terminal.", "launcher"),
+        ("Switch to the docs terminal.", "find"),
+    ],
+)
+def test_uncertain_provider_clock_only_permits_screen_navigation(client, monkeypatch, words, action):
     import asyncio
     import json
     from contextlib import asynccontextmanager
@@ -610,8 +623,14 @@ def test_uncertain_provider_clock_preserves_voice_but_withholds_terminal_proof(c
                 await asyncio.sleep(0.65)
                 await self.frames.put({"type": "session.started"})
             elif event["type"] == "session.input_audio.append":
-                await self.frames.put(timed("Tell it to retry. Send that.", 370, 400, "uncertain"))
+                await self.frames.put(timed(words, 580, 640, "uncertain"))
                 await self.frames.put(timed("Okay.", 500, 600, "next", role="output"))
+                if action:
+                    asyncio.get_running_loop().call_later(
+                        1.2,
+                        self.frames.put_nowait,
+                        timed("Test deadline.", 1200, 1300, "deadline", role="output"),
+                    )
             elif event["type"] == "session.close":
                 await self.frames.put({"type": "session.closed", "usage": {"seconds": 15}})
 
@@ -631,6 +650,8 @@ def test_uncertain_provider_clock_preserves_voice_but_withholds_terminal_proof(c
         native.send_bytes(bytes(800))
         assert native.receive_json()["role"] == "user"
         assert native.receive_json()["role"] == "assistant"
+        if action:
+            assert native.receive_json()["action"] == action
         native.send_json({"type": "stop"})
         assert native.receive_json()["reason"] == "ended"
 

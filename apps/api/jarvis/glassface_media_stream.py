@@ -109,18 +109,30 @@ class Playback:
     def __init__(self):
         self.queue_end = 0
         self.windows = []
+        self.mic_windows = []
         self.caption = ""
 
     def audio(self, raw, wall_ms, mic_ms):
         self.queue_end = max(wall_ms, self.queue_end) + len(raw) * 1000 / RATE
         if not raw.strip(b"\x7f\xff"):  # G.711 positive and negative digital silence.
             return
+        # Keep the actual mic cursor at the first non-silent downlink frame.
+        # A reply sent after a navigation utterance cannot have caused it.
+        mic_end = mic_ms + len(raw) * 1000 / RATE + 500
+        if self.mic_windows and mic_ms <= self.mic_windows[-1][1]:
+            mic_ms_start, previous = self.mic_windows.pop()
+            self.mic_windows.append((mic_ms_start, max(previous, mic_end)))
+        else:
+            self.mic_windows.append((mic_ms, mic_end))
         early = min(wall_ms, mic_ms) - 450
         late = max(self.queue_end, mic_ms + self.queue_end - wall_ms) + 1200
         if self.windows and early <= self.windows[-1][1]:
             early, previous = self.windows.pop()
             late = max(late, previous)
         self.windows.append((early, late))
+
+    def during_navigation(self, start, end):
+        return any(left < end and start <= right for left, right in self.mic_windows)
 
     def could_echo(self, words, start, end, arrival):
         if any((left <= end and right >= start) or left <= arrival <= right for left, right in self.windows):
@@ -570,21 +582,28 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds, *, 
                         downlink.may_play.set()
                         words = speech.add(event)
                         action, words = ("tell", words) if words else speech.read_control() or (None, None)
+                        navigation = action in {"home", "find", "launcher"}
                         if (
                             action
                             and offset_ms is not None
                             and speech.start >= offset_ms
-                            and origin_error_ms <= 250
-                            and speech.end - offset_ms <= mic_bytes * 1000 / RATE + 350
+                            and (navigation or origin_error_ms <= 250)
+                            and speech.end - offset_ms
+                            <= mic_bytes * 1000 / RATE
+                            + (350 + min(1000, origin_error_ms) if navigation else 350)
                         ):
-                            if playback.could_echo(words, speech.start, speech.end, 1000 * (clock() - epoch)):
-                                continue
-                            claim = (
-                                action,
-                                words,
-                                round(speech.start - offset_ms),
-                                round(speech.end - offset_ms),
+                            start_ms = round(speech.start - offset_ms)
+                            end_ms = round(speech.end - offset_ms)
+                            echo = (
+                                playback.during_navigation(start_ms, end_ms)
+                                if navigation
+                                else playback.could_echo(
+                                    words, speech.start, speech.end, 1000 * (clock() - epoch)
+                                )
                             )
+                            if echo:
+                                continue
+                            claim = (action, words, start_ms, end_ms)
                             if action == "tell":
                                 await send_action(*claim)
                             else:

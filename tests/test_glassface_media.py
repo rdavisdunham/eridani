@@ -755,6 +755,36 @@ def test_native_stream_releases_bill_and_cross_replica_lock(client, monkeypatch,
         ("Set the volume to medium.", "input", None, None),
         ("Open the terminal list.", "output", 0, None),
         ("Start Codex in the Jarvis folder.", "input", None, None),
+        (
+            "Where do I quiet notifications?",
+            "input",
+            None,
+            {"name": "navigate", "command": "open", "value": "quiet_hours"},
+        ),
+        (
+            "Take me to the terminal page.",
+            "input",
+            0.05,
+            {"name": "navigate", "command": "open", "value": "terminals"},
+        ),
+        ("Bring me somewhere quiet.", "input", None, None),
+        ("I see the quiet hours screen.", "input", None, None),
+        ("Show me where I can mute alerts.", "input", None, None),
+        ("Where do I quiet notifications?", "output", None, None),
+        ("Can you set quiet hours to noon?", "input", 0, None),
+        (
+            "Bring up quiet hours.",
+            "input",
+            None,
+            {"name": "navigate", "command": "open", "value": "quiet_hours"},
+        ),
+        ("Take me home.", "input", None, {"name": "navigate", "command": "open", "value": "home"}),
+        (
+            "Could you pull up my quiet time?",
+            "input",
+            None,
+            {"name": "navigate", "command": "open", "value": "quiet_hours"},
+        ),
     ],
 )
 def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase, role, delay, expected):
@@ -776,6 +806,29 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         "choices": ["Release notes", "Glassface"],
         "selection": "Release notes",
     }
+    tree_results = {
+        "Where do I quiet notifications?": ("navigate", "quiet_hours"),
+        "Take me to the terminal page.": ("navigate", "terminals"),
+        "Bring me somewhere quiet.": ("navigate", "invented_page"),
+        "I see the quiet hours screen.": ("none", ""),
+        "Show me where I can mute alerts.": ("navigate", "quiet_hours"),
+        "Can you set quiet hours to noon?": ("navigate", "set_volume"),
+        "Bring up quiet hours.": None,  # Exact advertised label, no classifier needed.
+        "Take me home.": None,
+        "Could you pull up my quiet time?": ("navigate", "quiet_hours"),
+    }
+    tree = phrase in tree_results
+    if tree:
+        view["destinations"] = [
+            {"id": "home", "label": "Home", "parent": ""},
+            {"id": "terminals", "label": "Terminals", "parent": "home"},
+            {"id": "quiet_hours", "label": "Quiet hours", "parent": "home"},
+        ]
+    missing_receipt = phrase == "Could you pull up my quiet time?"
+    rejection = phrase == "Take me to the terminal page."
+    change_during_lookup = phrase == "Show me where I can mute alerts."
+    started, changed = threading.Event(), threading.Event()
+    result_text = "A draft is open. Screen stayed here." if rejection else "Operation completed"
     returned = threading.Event()
     resolved = []
     results = []
@@ -783,6 +836,19 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
 
     def infer(owner, path, body, *args, **kwargs):
         assert path == "responses" and kwargs["trace_content"] is False
+        if tree:
+            assert json.loads(body["input"]) == {
+                "wearer": phrase,
+                "screen": "terminal",
+                "page": "reader",
+                "destinations": view["destinations"],
+            }
+            if change_during_lookup:
+                started.set()
+                assert changed.wait(2)
+            name, query = tree_results[phrase]
+            resolved.append(True)
+            return {"choices": [{"message": {"content": json.dumps({"name": name, "query": query})}}]}
         assert json.loads(body["input"]) == {"wearer": phrase, "screen": "terminal"}
         assert body["text"]["format"]["schema"]["properties"]["name"]["enum"] == ["list", "read", "none"]
         resolved.append(True)
@@ -808,11 +874,22 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                     loop.call_later(delay, self.events.put_nowait, delegate)
                     loop.call_later(delay + 0.02, self.events.put_nowait, delegate)
                 self.events.put_nowait(timed(phrase, 30, 160, "observed", role))
+                if tree and expected and role == "input":
+                    # A guessed audible acknowledgement may arrive in the same provider burst.
+                    loop.call_later(
+                        0.15, self.events.put_nowait, {"type": "session.output_audio.delta", "delta": "AwMD"}
+                    )
+                    loop.call_later(
+                        0.15, self.events.put_nowait, timed("Already opened!", 200, 260, "guess", "output")
+                    )
                 loop.call_later(
-                    1.3, self.events.put_nowait, timed("fixture boundary", 300, 400, "end", "output")
+                    1.3,
+                    self.events.put_nowait,
+                    timed("fixture boundary", 300, 400, "end", "input" if tree else "output"),
                 )
             elif kind == "session.thinking.append" and event["content"].startswith("Glass now displays"):
                 displays.append(json.loads(event["content"].split(": ", 1)[1]))
+                changed.set()
                 self.events.put_nowait(timed("view acknowledged", 600, 650, str(len(displays)), "output"))
             elif kind == "session.commentary.append":
                 results.append(event)
@@ -840,6 +917,10 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         native.send_bytes(bytes(800))
         while True:
             message = native.receive_json()
+            assert message.get("text") != "Already opened!"
+            if change_during_lookup and message.get("text") == phrase:
+                assert started.wait(2)
+                native.send_json({"type": "view", **view, "page": "other_page"})
             if message.get("text") == "fixture boundary":
                 break
             if message["type"] == "utterance":
@@ -849,17 +930,22 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
 
                     time.sleep(0.45)  # Late delegation arrives while the device is still working.
                 native.send_json({"type": "receipt", "operation": "not-issued", "text": "Wrong result"})
-                native.send_json(
-                    {"type": "receipt", "operation": message["operation"], "text": "Operation completed"}
-                )
+                if missing_receipt:
+                    native.send_json({"type": "receipt", "text": "Uncorrelated confirmation"})
+                    continue
+                native.send_json({"type": "receipt", "operation": message["operation"], "text": result_text})
                 native.send_json(
                     {"type": "receipt", "operation": message["operation"], "text": "Duplicate result"}
                 )
-        if expected:
+        if missing_receipt:
+            assert not results
+        elif change_during_lookup:
+            assert returned.wait(1) and "screen changed" in results[0]["content"]
+        elif expected:
             assert returned.wait(1) and len(results) == 1
             expected_delegation = None if delay is None or phrase == "What did I last ask?" else "del-1"
             assert results[0]["delegation_id"] == expected_delegation
-            assert '"Operation completed"' in results[0]["content"]
+            assert json.dumps(result_text) in results[0]["content"]
         if expected and expected.get("command") == "set_volume":
             for page in ("volume", "help"):
                 native.send_json(
@@ -884,4 +970,57 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     assert verified["action"] == expected["name"] and verified["tool"] == expected
     assert claims[0].get("command") == expected.get("command")
     assert verified["text"] == phrase and verified["view"] == view
-    assert bool(resolved) is phrase.startswith("Catch me up")
+    assert bool(resolved) is (tree_results[phrase] is not None if tree else phrase.startswith("Catch me up"))
+
+
+@pytest.mark.parametrize(
+    "nodes",
+    [
+        [("home", ""), ("home", "home")],
+        [("home", ""), ("other", "")],
+        [("home", ""), ("settings", "missing")],
+        [("home", ""), ("a", "b"), ("b", "a")],
+        [("home", ""), ("UPPER", "home")],
+    ],
+)
+def test_navigation_map_requires_paths_to_one_root(nodes):
+    from jarvis.glassface_media_stream import View
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        View(
+            screen="home",
+            destinations=[{"id": ident, "label": "A page", "parent": parent} for ident, parent in nodes],
+        )
+
+
+def test_semantic_resolution_cannot_grant_unadvertised_navigation_or_writes():
+    view = {
+        "screen": "home",
+        "actions": ["open"],
+        "destinations": [{"id": "home", "label": "Home", "parent": ""}],
+    }
+    for action, tool in [
+        ("navigate", {"name": "navigate", "command": "set_volume", "value": "high"}),
+        ("navigate", {"name": "navigate", "command": "open", "value": "secret"}),
+        ("start", {"name": "start", "harness": "whatever"}),
+        ("tell", {"name": "tell"}),
+    ]:
+        assert media.attest("identity", "focus", action, "arbitrary words", view, resolved_tool=tool) is None
+    view["actions"] = ["back"]
+    assert (
+        media.attest(
+            "identity",
+            "focus",
+            "navigate",
+            "Take me back home",
+            view,
+            resolved_tool={"name": "navigate", "command": "open", "value": "home"},
+        )
+        is None
+    )
+
+
+def test_does_not_issue_a_proof_larger_than_the_headset_can_verify(monkeypatch):
+    monkeypatch.setattr(media.work_crypto, "seal", lambda assertion: "x" * 8193)
+    assert media.attest("identity", "focus", "open", "Show me that terminal") is None

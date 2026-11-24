@@ -93,7 +93,7 @@ def consume(ticket):
     return identity, body
 
 
-def attest(identity, focus, action, text, view=None, *, read_tool=None):
+def attest(identity, focus, action, text, view=None, *, resolved_tool=None):
     operation = str(uuid4())
     assertion = {
         "purpose": "glass-live-utterance-v1",
@@ -103,20 +103,41 @@ def attest(identity, focus, action, text, view=None, *, read_tool=None):
         "text": text,
         "operation": operation,
     }
+    if resolved_tool is not None and action not in {"list", "read", "navigate"}:
+        return None
     if action in {"list", "read", "navigate", "start"}:
-        tool = read_tool if action in {"list", "read"} and read_tool else glassface_tools.parse(text)
+        tool = glassface_tools.parse(text, view)
+        if resolved_tool:
+            if action in {"list", "read"} or (
+                action == "navigate"
+                and resolved_tool.get("command") == "open"
+                and set(resolved_tool) == {"name", "command", "value"}
+                and view
+                and "open" in view.get("actions", [])
+                and any(node["id"] == resolved_tool["value"] for node in view.get("destinations", []))
+            ):
+                tool = resolved_tool
+            else:
+                return None
         if not tool or tool["name"] != action or not view or "actions" not in view:
             return None
-        if tool.get("command") in {"select", "enter_folder"} and tool.get("value") and not view.get("choices"):
+        if (
+            tool.get("command") in {"select", "enter_folder"}
+            and tool.get("value")
+            and not view.get("choices")
+        ):
             return None
         assertion["tool"] = tool
     if view is not None:
         assertion["view"] = view
+    proof = work_crypto.seal(assertion)
+    if len(proof) > 8192:  # Shared limit on the device and the DavisPC verifier.
+        return None
     return {
         "type": "utterance",
         "action": action,
         "operation": operation,
-        "proof": work_crypto.seal(assertion),
+        "proof": proof,
         **({"command": assertion["tool"]["command"]} if action == "navigate" else {}),
     }
 
@@ -191,11 +212,11 @@ async def native_voice(peer: WebSocket):
         # Allow for setup, the media deadline, graceful close and billing rounding.
         async with leased_slot(identity, settings.live_model, usage, LIVE_SECONDS + 20) as recheck:
 
-            async def proof(action, words, view=None, *, read_tool=None):
+            async def proof(action, words, view=None, *, resolved_tool=None):
                 if not body["focus"]:
                     return None
                 await recheck()
-                return attest(identity, body["focus"], action, words, view, read_tool=read_tool)
+                return attest(identity, body["focus"], action, words, view, resolved_tool=resolved_tool)
 
             await glassface_media_stream.bridge(
                 peer,
@@ -207,8 +228,8 @@ async def native_voice(peer: WebSocket):
                 proof,
                 LIVE_SECONDS,
                 view=body.get("view"),
-                resolve_read=lambda words, scene: run_in_threadpool(
-                    glassface_tools.resolve_read, identity, words, scene
+                resolve_intent=lambda words, scene: run_in_threadpool(
+                    glassface_tools.resolve_view_intent, identity, words, scene
                 ),
             )
     except DomainError as exc:

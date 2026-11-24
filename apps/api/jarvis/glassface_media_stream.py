@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import logging
 import math
 import re
 from collections import deque
@@ -19,8 +20,11 @@ from . import glassface_live as live
 from . import glassface_tools
 from .domain import DomainError
 
+log = logging.getLogger("uvicorn.error")
+
 RATE = 8000
 READ_SETTLE_SECONDS = 0.55
+SEMANTIC_SETTLE_SECONDS = 0.9
 MAX_FRAME = 800  # 100 ms of G.711, one byte per sample.
 # Values at or above approximately 1,400 PCM16 counts help defer a notification while speech is starting.
 ACTIVE_SAMPLES = bytes(int((~code & 0x7F) >= 56) for code in range(256))
@@ -607,6 +611,14 @@ async def bridge(
             pending_read = None
             unclaimed = None
             resolving_turn = None
+            pending_lookup = None
+
+            async def resolve_pending():
+                nonlocal pending_lookup
+                # One provider call at a time, with only the latest settled continuation waiting.
+                while pending_lookup is not None:
+                    resolve, pending_lookup = pending_lookup, None
+                    await resolve()
 
             async def failed_action(reason, delegated):
                 if checking:
@@ -615,7 +627,7 @@ async def bridge(
                 await append_context("commentary", reason, delegated)
 
             async def send_action(action, words, start, end, delegated=None):
-                nonlocal lookups, resolving_turn
+                nonlocal pending_lookup, resolving_turn
                 spoken_view = views.during(start, end, origin_error_ms + 100)
                 if view is not None and not spoken_view:
                     return
@@ -623,21 +635,42 @@ async def bridge(
                 if action == "lookup" or (tree and action == "find"):
                     if (not delegated and not tree) or not resolve_intent or not spoken_view:
                         return
-                    if lookup_tasks or lookups >= 12:
-                        if delegated:
-                            await append_context(
-                                "commentary", "The lookup is busy. Please ask again.", delegated
-                            )
-                        return
-                    lookups += 1
-
                     input_turn = resolving_turn = turn
                     revision = views.changes[-1]
 
                     async def semantic_intent():
-                        nonlocal unclaimed, delegation, resolving_turn
+                        nonlocal unclaimed, delegation, resolving_turn, lookups
                         try:
+                            if turn != input_turn:
+                                return
+                            if lookups >= 12:
+                                await failed_action(
+                                    "The lookup limit for this conversation was reached. Start a new conversation to try again.",
+                                    delegated,
+                                )
+                                return
+                            lookups += 1
+                            started = clock()
                             resolved = await resolve_intent(words, spoken_view)
+                            # Outcome and latency suffice to diagnose dropped continuations without speech or screen data.
+                            outcome = (
+                                "superseded" if turn != input_turn else (resolved or {}).get("name", "none")
+                            )
+                            if outcome not in {
+                                "superseded",
+                                "none",
+                                "navigate",
+                                "read",
+                                "list",
+                                "find",
+                                "unavailable",
+                            }:
+                                outcome = "unsupported"
+                            log.info(
+                                "Glass semantic resolution outcome=%s duration_ms=%d",
+                                outcome,
+                                1000 * (clock() - started),
+                            )
                             if turn != input_turn:
                                 return
                             if spoken_view != views.changes[-1][1] or revision != views.changes[-1]:
@@ -682,19 +715,31 @@ async def bridge(
                             if not matched:
                                 unclaimed = (candidate["operation"], clock() + 4)
                             await issue(candidate, start, end, matched)
-                        except (HTTPError, DomainError, KeyError, ValueError, TypeError, IndexError, OSError):
+                        except (
+                            HTTPError,
+                            DomainError,
+                            KeyError,
+                            ValueError,
+                            TypeError,
+                            IndexError,
+                            OSError,
+                        ) as exc:
+                            log.warning("Glass semantic resolution failed type=%s", type(exc).__name__)
                             if turn == input_turn and (delegated or action == "find"):
                                 await failed_action(
                                     "Glass could not resolve this request. No action was taken.", delegated
                                 )
                         finally:
-                            resolving_turn = None
+                            if resolving_turn == input_turn:
+                                resolving_turn = None
                             if checking and input_turn == turn:
                                 await release_reply()
 
-                    task = asyncio.create_task(semantic_intent())
-                    lookup_tasks.add(task)
-                    task.add_done_callback(lookup_tasks.discard)
+                    pending_lookup = semantic_intent
+                    if not any(not task.done() for task in lookup_tasks):
+                        task = asyncio.create_task(resolve_pending())
+                        lookup_tasks.add(task)
+                        task.add_done_callback(lookup_tasks.discard)
                     return
                 if tree and action in {"home", "launcher"}:
                     candidate = await proof(
@@ -951,7 +996,12 @@ async def bridge(
                                     checking = True
                                 if checking or action != "lookup":
                                     downlink.may_play.clear()
-                                pending_read = (clock() + READ_SETTLE_SECONDS, *claim)
+                                settle = (
+                                    SEMANTIC_SETTLE_SECONDS
+                                    if tree and action in {"lookup", "find"}
+                                    else READ_SETTLE_SECONDS
+                                )
+                                pending_read = (clock() + settle, *claim)
                         if pending_read is None or not checking and pending_read[1] == "lookup":
                             await release_reply()
                 elif kind == "input_audio_buffer.speech_started":

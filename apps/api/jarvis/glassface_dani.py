@@ -177,7 +177,7 @@ def status(identity: Bot):
             "ready": True,
             "model": settings.live_model,
             "live": native,
-            **({"screenContext": True, "screenControls": True} if native else {}),
+            **({"screenContext": True, "screenControls": True, "navigationTree": True} if native else {}),
         },
         headers={"Cache-Control": "no-store"},
     )

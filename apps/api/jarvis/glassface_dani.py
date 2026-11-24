@@ -23,7 +23,6 @@ from .external_routes import Bot
 from .live_voice import LIVE_PRICE_PER_SECOND
 
 router = APIRouter()
-SCOPE = "glassface:dani"
 active = set()
 MAX_REQUEST_BYTES = 96_000
 
@@ -71,10 +70,7 @@ def busy():
 
 
 def granted(db, identity):
-    bot = bot_access.authorize(db, required=SCOPE, credential_id=identity)
-    if set(bot.scopes) != {SCOPE}:
-        raise DomainError("INSUFFICIENT_SCOPE", "Use a dedicated Glass Dani key.", 403)
-    return bot.owner_id
+    return bot_access.google_glass(db, identity).owner_id
 
 
 @contextmanager

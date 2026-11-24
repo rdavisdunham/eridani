@@ -18,7 +18,7 @@ Use a secret store or environment variable for the key, not a prompt, URL, repos
 
 ## Dani on Google Glass
 
-In your personal workspace, open **Settings → Connections → Agent keys → Add agent**. Under **Key type**, select **Google Glass**, choose the expiry, and click **Create key**. Copy the one-time key to the DavisPC gateway. This preset grants only `glassface:dani`. The key owns an independent GPT-Live conversation for the headset.
+In your personal workspace, open **Settings → Connections → Agent keys → Add agent**. Under **Key type**, select **Google Glass**, choose the expiry, and click **Create key**. Copy the one-time key to the DavisPC gateway. The `glassface:dani` permission covers the headset’s GPT-Live conversation and messages to paired managed runs. Previously issued Google Glass keys have the same access.
 
 - `GET /api/glassface/dani/status` checks the key and whether hosted voice is configured. A successful check returns `{"ready":true,"model":"…"}` without opening a billed voice session.
 - `POST /api/glassface/dani/turn` accepts a terminal snapshot, a question, and up to four prior Glass exchanges. Dani returns a brief text answer. Eridani applies its voice budget and rechecks the grant before disclosing the answer. Terminal delivery uses the DavisPC gateway's separately guarded receipt path.
@@ -336,6 +336,6 @@ timestamp; transcript activity and filing edits must not be treated as heartbeat
 
 ### Google Glass managed messages
 
-In your personal workspace, turn on Remotea and pair its host. Under **Settings → Connections → Agent keys → Add agent**, choose **Google Glass managed messages** and create a dedicated key. On DavisPC run `~/.local/share/glassface-m1/connect-eridani --managed-messages` and enter the key at its hidden prompt. The separate **Google Glass** key handles Dani voice. Revoke either key independently in Connected agents.
+The Google Glass key already enrolled on DavisPC can queue follow-ups. Enable Remotea in the same personal workspace and pair its host. Revoking the Google Glass key in Connected agents disables both voice and managed messages.
 
 The gateway authenticates with a Bearer token at `GET /api/glassface/managed-messages/status`. To queue a message, send `POST /api/glassface/runs/{run_id}/messages` with the persistent Remotea `server_id`, `surf`, `generation`, `incarnation`, message `text`, and a UUID `action_id`. Keep the same UUID and body after a lost response. A queued receipt records acceptance in the linked host's command outbox. The host applies its normal generation, process and automation fences. Open pending approvals, paused runs, offline hosts, and terminal takeovers remain under the owner's existing Eridani controls.

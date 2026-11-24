@@ -15,7 +15,6 @@ from .models import now
 from .session_models import AgentHost, AgentSession
 
 router = APIRouter(prefix="/api/glassface")
-SCOPE = "glassface:message"
 
 
 class Message(BaseModel):
@@ -36,9 +35,7 @@ class Message(BaseModel):
 
 
 def grant(db, identity):
-    bot = bot_access.authorize(db, required=SCOPE, credential_id=identity)
-    if set(bot.scopes) != {SCOPE}:
-        raise DomainError("INSUFFICIENT_SCOPE", "Use a dedicated Glass managed messages key.", 403)
+    bot = bot_access.google_glass(db, identity)
     agent_link.gate(db, bot.owner_id)
     return bot
 

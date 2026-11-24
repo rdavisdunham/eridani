@@ -58,6 +58,7 @@ describe("agent key enrollment", () => {
   it("submits only the dedicated scope even after choosing other agent grants", async () => {
     await open();
     act(() => host.querySelector<HTMLInputElement>("input[type=checkbox]")!.click());
+    expect([...field("Key type")!.querySelectorAll("option")].map(option => option.value)).toEqual(["agent", "glass"]);
     select("Key type", "glass");
     expect(field("Task scheduling")).toBeUndefined();
     expect(host.querySelector("input[type=checkbox]")).toBeNull();
@@ -68,13 +69,6 @@ describe("agent key enrollment", () => {
     act(() => button("Add agent").click());
     expect(field("Key type")!.querySelector("select")!.value).toBe("agent");
     expect(field("Key expires after")!.querySelector("select")!.value).toBe("90");
-  });
-  it("enrolls a separate key for managed messages", async () => {
-    await open();
-    select("Key type", "glassMessages");
-    expect(host.querySelector("input[type=checkbox]")).toBeNull();
-    await act(async () => button("Create key").click());
-    expect(post).toHaveBeenCalledExactlyOnceWith("/bot-keys", { name: "Glass managed messages", scopes: ["glassface:message"], expires_in_days: 90 });
   });
   it("opens a fresh normal agent form after canceling a Glass key", async () => {
     await open();

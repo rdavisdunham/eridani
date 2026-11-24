@@ -1,15 +1,20 @@
 """Exercise owner enrollment and managed Glass sends against a disposable linked run."""
+from importlib import import_module
 from uuid import uuid4
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from jarvis import agent_receipts
 from jarvis.db import session_scope
+from jarvis.models import BotCredential
 from jarvis.session_models import AgentCommand, AgentHost, AgentRun, AgentSession
 from sqlalchemy import select
 from test_agent_runs import attached, start, task
 from test_agent_runs import host as host
 from test_agent_runs import quiet as quiet
 from test_glassface_dani import key
+from test_glassface_dani import settings as settings
 
 STATUS = "/api/glassface/managed-messages/status"
 
@@ -27,20 +32,37 @@ def fixture(host, client):
         session.incarnation, session.surf, session.state = run.incarnation, run.surf, "idle"
         body = {"server_id": server.server_id, "surf": run.surf, "incarnation": run.incarnation,
                 "generation": run.generation, "action_id": str(uuid4()), "text": "What is left on this fixture?"}
-    _, headers = key(client, ["glassface:message"])
+    _, headers = key(client, ["glassface:dani"])
     return run_id, f"/api/glassface/runs/{run_id}/messages", body, headers
 
 
-def test_dedicated_opt_in(client, host):
-    for scope in ("glassface:dani", "agents:control", "agents:read"):
+def test_existing_glass_scope_serves_both_routes(client, host):
+    for scope in ("agents:control", "agents:read"):
         _, headers = key(client, [scope])
         assert client.get(STATUS, headers=headers).status_code == 403
-        assert client.post("/api/v1/bot-keys", json={"name": "mixed", "scopes": ["glassface:message", scope]}).status_code == 400
-    credential, headers = key(client, ["glassface:message"])
+    assert client.post("/api/v1/bot-keys", json={"name": "retired", "scopes": ["glassface:message"]}).status_code == 400
+    credential, headers = key(client, ["glassface:dani"])
     assert client.get(STATUS, headers=headers).json() == {"ready": True}
-    assert client.get("/api/glassface/dani/status", headers=headers).status_code == 403
+    assert client.get("/api/glassface/dani/status", headers=headers).status_code == 200
     client.post(f"/api/v1/bot-keys/{credential}/revoke")
     assert client.get(STATUS, headers=headers).status_code == 401
+
+
+def test_retirement_preserves_original_glass_keys(client, host):
+    migration = import_module("migrations.versions.0067_retire_glass_message_keys")
+    active, headers = key(client, ["glassface:dani"])
+    retired, legacy_headers = key(client, ["glassface:dani"])
+    with session_scope() as db:
+        db.get(BotCredential, retired).scopes = ["glassface:message"]
+        db.flush()
+        with Operations.context(MigrationContext.configure(db.connection())):
+            migration.upgrade()
+            migration.upgrade()
+    with session_scope() as db:
+        assert db.get(BotCredential, retired).revoked_at is not None
+        assert db.get(BotCredential, active).revoked_at is None
+    assert client.get(STATUS, headers=legacy_headers).status_code == 401
+    assert client.get(STATUS, headers=headers).json() == {"ready": True}
 
 
 def test_managed_replay_and_provenance(client, fixture):

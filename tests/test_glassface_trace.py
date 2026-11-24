@@ -78,3 +78,25 @@ def test_ingestion_requires_positive_otlp_ack(monkeypatch):
     with pytest.raises(ValueError,match="rejected"):
         send()
     send()
+
+
+def test_storage_upload_keeps_signed_query_out_of_errors_and_logs(monkeypatch, caplog):
+    import logging
+    from unittest.mock import MagicMock
+    import pytest
+
+    conn = MagicMock()
+    response = conn.getresponse.return_value.__enter__.return_value
+    connect = MagicMock(return_value=conn)
+    monkeypatch.setattr(trace, "HTTPSConnection", connect)
+    caplog.set_level(logging.INFO)
+    url = "https://storage.example/file.wav?signature=private-test-value"
+    headers = {"Content-Type": "audio/wav"}
+    response.status = 200
+    assert trace.put_media(url, b"audio", headers) == 200
+    connect.assert_called_once_with("storage.example", 443, timeout=14)
+    conn.request.assert_called_once_with("PUT", "/file.wav?signature=private-test-value", body=b"audio", headers=headers)
+    response.status = 307
+    with pytest.raises(ValueError, match="HTTP 307") as caught:
+        trace.put_media(url, b"audio", headers)
+    assert "private-test-value" not in str(caught.value) + caplog.text

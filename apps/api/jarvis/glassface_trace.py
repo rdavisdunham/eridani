@@ -7,10 +7,12 @@ import re
 import sys
 import base64
 import hashlib
+from http.client import HTTPSConnection
+from contextlib import closing
 import json
 import os
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 import time
 import wave
 from functools import lru_cache
@@ -92,6 +94,21 @@ def scrub(value):
     return value
 
 
+def put_media(url, data, headers):
+    # httpx logs complete request URLs at INFO. The storage query is a temporary
+    # credential, so use a single TLS request with no request logging or redirects.
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password or parts.fragment:
+        raise ValueError("Expected HTTPS media storage")
+    path = urlunsplit(("", "", parts.path or "/", parts.query, ""))
+    with closing(HTTPSConnection(parts.hostname, parts.port or 443, timeout=14)) as storage:
+        storage.request("PUT", path, body=data, headers=headers)
+        with storage.getresponse() as result:
+            if not 200 <= result.status < 300:
+                raise ValueError(f"Media storage returned HTTP {result.status}")
+            return result.status
+
+
 def attachment(api, identity, observation, field, data):
     """Register media with Langfuse, then PUT to its signed URL without project credentials."""
     checksum = base64.b64encode(hashlib.sha256(data).digest()).decode()
@@ -107,10 +124,9 @@ def attachment(api, identity, observation, field, data):
         headers = {"Content-Type": "audio/wav"}
         if "storage.googleapis.com" not in urlsplit(url).hostname:
             headers.update({"x-amz-checksum-sha256": checksum, "x-ms-blob-type": "BlockBlob"})
-        result = httpx.put(url, content=data, headers=headers, timeout=14, follow_redirects=False)
-        result.raise_for_status()
+        status = put_media(url, data, headers)
         ack = api.patch("/api/public/media/" + media["mediaId"], json={
-            "uploadedAt": datetime.now(timezone.utc).isoformat(), "uploadHttpStatus": result.status_code,
+            "uploadedAt": datetime.now(timezone.utc).isoformat(), "uploadHttpStatus": status,
             "uploadTimeMs": round((time.monotonic() - started)*1000)})
         ack.raise_for_status()
     return f"@@@langfuseMedia:type=audio/wav|id={media['mediaId']}|source=bytes@@@"
@@ -154,6 +170,8 @@ def upload(project, identity, name, inputs, outputs, tracks):
             rejected = ExportTraceServiceResponse.FromString(response.content).partial_success.rejected_spans
         if rejected:
             raise ValueError("Langfuse rejected the observation")
+        if name == "Glass · Dani Live":
+            log.info("Glass voice trace accepted trace=%s segment=%s audio_lanes=%d", identity, inputs.get("segment"), len(tracks))
 
 
 class Session:

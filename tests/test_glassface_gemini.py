@@ -424,7 +424,7 @@ def test_direct_in_terminal_send_and_completion_notice_delivery(client, monkeypa
                 }
             )
             silence = bytes([0xFF] * 320)
-            for _ in range(38):
+            for _ in range(48):
                 ws_client.send_bytes(silence)
                 time.sleep(0.032)
                 if notice_ready.is_set():

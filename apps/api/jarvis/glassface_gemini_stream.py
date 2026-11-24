@@ -492,7 +492,7 @@ async def bridge(
     view: dict | None = None,
     thinking_level: Literal["low", "medium", "high"] | None = None,
     trace=None,
-    connector=connect,
+    connector=None,
 ):
     if model not in GEMINI_MODELS:
         raise ValueError(f"Unsupported Gemini Live model: {model}")
@@ -505,8 +505,9 @@ async def bridge(
             first.cancel()
             await asyncio.gather(first, return_exceptions=True)
 
+        ws_connect = connector or connect
         ws = await resources.enter_async_context(
-            connector(
+            ws_connect(
                 GEMINI_LIVE_URL,
                 additional_headers={"x-goog-api-key": key},
                 open_timeout=8,

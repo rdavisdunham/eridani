@@ -68,6 +68,9 @@ def _perform_job(job_id):
         from .context import pipeline
 
         return pipeline.perform(job_id)
+    if kind == "glass_terminal_brief":
+        from .glassface_work import perform
+        return perform(job_id)
     if kind == "agent_action":
         from . import work_runner
         asyncio.run(work_runner.run(job_id))
@@ -201,7 +204,7 @@ def dispatch_outbox(client, after=None):
                 {
                     "workflow_name": "jarvis_job_v1",
                     "queue_name": "jarvis-context" if job.kind.startswith("context_")
-                    else "jarvis-agent" if job.kind == "agent_action"
+                    else "jarvis-agent" if job.kind in {"agent_action", "glass_terminal_brief"}
                     else "jarvis-linear"
                     if db.get(Job, row.job_id).kind in {"linear_sync", "linear_write", "linear_comment"}
                     else "jarvis-google"
@@ -346,6 +349,8 @@ def send_deliveries():
 
 
 def housekeeping():
+    from .glassface_work import expire
+    isolated("expire_glass_work", in_session, expire)
     from .models import OwnerSettings
 
     with session_scope() as db:

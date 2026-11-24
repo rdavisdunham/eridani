@@ -17,7 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
 
 from . import glassface_live as live
-from . import glassface_tools
+from . import glassface_tools, glassface_work
 from .domain import DomainError
 
 log = logging.getLogger("uvicorn.error")
@@ -457,7 +457,7 @@ def session_start(model, terminal, view=None):
 
 
 async def bridge(
-    peer, model, key, terminal, usage, recheck, proof, seconds, *, view=None, resolve_intent=None, trace=None
+    peer, model, key, terminal, usage, recheck, proof, seconds, *, view=None, resolve_intent=None, trace=None, worker_identity=None
 ):
     async with AsyncExitStack() as resources:
         first = asyncio.create_task(peer.receive())
@@ -497,6 +497,10 @@ async def bridge(
         completed = {}
         results = asyncio.Queue(maxsize=128)
         result_appends = {}
+        worker_requests = {}
+        worker_deliveries = set()
+        worker_delegations = {}
+        poll_worker = bool(worker_identity)
         # A delegation ID carries no wearer instruction. Match one request only to
         # a recent, separately verified microphone turn, in either arrival order.
         delegation = None
@@ -539,8 +543,29 @@ async def bridge(
             )
 
         async def report_results():
+            nonlocal poll_worker
             while True:
                 operation, text, delegated = await results.get()
+                question = worker_requests.pop(operation, None)
+                if question is not None and worker_identity:
+                    if text.startswith("Workspace snapshot v1\n"):
+                        try:
+                            snapshot = json.loads(text.partition("\n")[2])
+                            if not isinstance(snapshot, dict) or not isinstance(snapshot.get("sessions"), list):
+                                raise ValueError("Invalid workspace snapshot")
+                            key = await asyncio.to_thread(glassface_work.submit, worker_identity, operation, question, snapshot)
+                        except Exception as exc:
+                            log.warning("Glass briefing submission failed type=%s", type(exc).__name__)
+                            text = "Glass could not confirm that the terminal briefing was queued. No terminal was changed."
+                        else:
+                            worker_delegations[key] = delegated
+                            poll_worker = True
+                            if trace:
+                                _, request = glassface_work.model_request({"question": question, "snapshot": snapshot})
+                                trace.event("worker-queued", job=key, operation=operation, request=request)
+                            text = "The background worker received the terminal snapshot and is preparing your briefing."
+                    elif not text.startswith("Glass has not confirmed"):
+                        text = "Glass did not return a current workspace snapshot, so the background worker did not start."
                 parts = list(quoted_parts(text))
                 if operation in awaiting:
                     # A receipt is a tool boundary, not an audio boundary. Suppress
@@ -818,6 +843,8 @@ async def bridge(
                                 matched, delegation = delegation[0], None
                             if not matched:
                                 unclaimed = (candidate["operation"], clock() + 4)
+                            if worker_identity and resolved.get("detail") == "brief":
+                                worker_requests[candidate["operation"]] = words
                             await issue(candidate, start, end, matched)
                         except (
                             HTTPError,
@@ -864,7 +891,8 @@ async def bridge(
                 return None
 
             async def issue(candidate, start, end, delegated):
-                if checking and candidate["action"] in ("navigate", "home", "launcher", "find", "open"):
+                if checking and (candidate["action"] in ("navigate", "home", "launcher", "find", "open")
+                                 or candidate["operation"] in worker_requests):
                     downlink.discard_held()
                     captions.clear()
                     awaiting[candidate["operation"]] = clock() + 12
@@ -954,7 +982,9 @@ async def bridge(
                     drained = True
                     return
                 elif kind == "session.commentary.appended":
-                    result_appends.pop(event.get("client_event_id"), None)
+                    delivered = result_appends.pop(event.get("client_event_id"), None)
+                    if delivered and delivered[0].startswith("worker:") and worker_identity:
+                        await asyncio.to_thread(glassface_work.reported, worker_identity, delivered[0][7:])
                 elif kind == "error":
                     error = event.get("error")
                     origin = event.get("client_event_id") or (
@@ -1158,7 +1188,7 @@ async def bridge(
             await downlink.play(peer, played)
 
         async def check_grant():
-            nonlocal delegation, waiting_tool
+            nonlocal delegation, waiting_tool, poll_worker
             await asyncio.wait_for(ready.wait(), timeout=10)
             opened = clock()
             while True:
@@ -1166,6 +1196,22 @@ async def bridge(
                 if clock() - (last_audio or opened) > 10:
                     raise TimeoutError("Glass stopped sending microphone audio")
                 await recheck()
+                if poll_worker:
+                    # Clear before awaiting so a concurrent submit cannot lose its wake-up.
+                    poll_worker = False
+                    updates = await asyncio.to_thread(glassface_work.waiting, worker_identity)
+                    for key, status, answer in updates:
+                        if status in glassface_work.ACTIVE:
+                            poll_worker = True
+                        elif key not in worker_deliveries:
+                            if speaking_since is not None or clock() - last_conversation < .7:
+                                # A routine analysis result can wait for a conversational pause.
+                                poll_worker = True
+                                continue
+                            worker_deliveries.add(key)
+                            if trace:
+                                trace.event("worker-result", job=key, status=status, answer=answer)
+                            await results.put(("worker:" + key, answer or glassface_work.UNCONFIRMED, worker_delegations.get(key)))
                 if delegation and delegation[1] <= clock() and not lookup_tasks and not checking:
                     ident, _ = delegation
                     delegation = None

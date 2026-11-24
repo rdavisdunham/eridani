@@ -248,6 +248,7 @@ async def native_voice(peer: WebSocket):
                 LIVE_SECONDS,
                 view=body.get("view"),
                 **({"trace": trace} if trace else {}),
+                **({"worker_identity": identity} if (body.get("view") or {}).get("destinations") else {}),
                 resolve_intent=lambda words, scene: run_in_threadpool(
                     glassface_tools.resolve_view_intent, identity, words, scene
                 ),

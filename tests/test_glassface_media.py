@@ -1039,3 +1039,93 @@ async def test_unconfirmed_audio_stays_bounded_until_released():
     playback.may_play.set()
     playback.add(bytes(800))
     assert playback.queued == 800
+
+
+def test_semantic_navigation_runs_the_newest_complete_utterance_after_a_slow_prefix(client, monkeypatch):
+    import asyncio
+    import json
+    import threading
+    from contextlib import asynccontextmanager
+
+    from jarvis import glassface_media_stream as stream
+    from jarvis import memory_learning
+
+    view = {
+        "screen": "home",
+        "page": "home",
+        "actions": ["open"],
+        "destinations": [
+            {"id": "home", "label": "Home", "parent": ""},
+            {"id": "volume", "label": "Volume", "parent": "home"},
+        ],
+    }
+    first_started, release_prefix = threading.Event(), threading.Event()
+    calls = []
+    observed = []
+
+    def infer(owner, path, body, *args, **kwargs):
+        calls.append(json.loads(body["input"])["wearer"])
+        if len(calls) == 1:
+            first_started.set()
+            assert release_prefix.wait(4)
+        return {"choices": [{"message": {"content": '{"name":"navigate","query":"volume"}'}}]}
+
+    class Provider:
+        def __init__(self):
+            self.events = asyncio.Queue()
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            if event["type"] == "session.start":
+                self.events.put_nowait({"type": "session.started"})
+            elif event["type"] == "session.input_audio.append":
+                if not observed:
+                    observed.append(True)
+                    self.events.put_nowait(timed("Show me the", 30, 100, "prefix", "input"))
+                else:
+                    self.events.put_nowait(timed(" sound", 102, 160, "continuation", "input"))
+                    self.events.put_nowait(timed(" controls", 161, 200, "end", "input"))
+                    self.events.put_nowait(timed("Already opened!", 201, 240, "guess", "output"))
+                    loop = asyncio.get_running_loop()
+                    loop.call_later(1.4, release_prefix.set)
+                    loop.call_later(
+                        1.9, self.events.put_nowait, timed("boundary", 250, 300, "boundary", "input")
+                    )
+            elif event["type"] == "session.close":
+                self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 6}})
+
+        async def recv(self):
+            return json.dumps(await self.events.get())
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield Provider()
+
+    monkeypatch.setattr(stream, "connect", connection)
+    monkeypatch.setattr(memory_learning, "provider_request", infer)
+    _, headers = key(client, [routes.SCOPE])
+    issued = client.post(ROOT + "/tickets", headers=headers, json={**BODY, "view": view}).json()
+    claims = []
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": issued["ticket"]})
+        assert native.receive_json()["type"] == "ready"
+        native.send_bytes(bytes(800))
+        assert first_started.wait(2)
+        native.send_bytes(bytes(800))
+        while True:
+            event = native.receive_json()
+            assert event.get("text") != "Already opened!"
+            if event.get("text") == "boundary":
+                break
+            if event["type"] == "utterance":
+                claims.append(event)
+        native.send_json({"type": "stop"})
+        assert native.receive_json()["reason"] == "ended"
+    assert calls == ["Show me the", "Show me the sound controls"]
+    assert len(claims) == 1
+    proof = client.post(ROOT + "/verify", headers=headers, json={"proof": claims[0]["proof"]}).json()
+    assert proof["text"] == "Show me the sound controls" and proof["tool"] == {
+        "name": "navigate",
+        "command": "open",
+        "value": "volume",
+    }

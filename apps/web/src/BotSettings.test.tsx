@@ -69,6 +69,13 @@ describe("agent key enrollment", () => {
     expect(field("Key type")!.querySelector("select")!.value).toBe("agent");
     expect(field("Key expires after")!.querySelector("select")!.value).toBe("90");
   });
+  it("enrolls a separate key for managed messages", async () => {
+    await open();
+    select("Key type", "glassMessages");
+    expect(host.querySelector("input[type=checkbox]")).toBeNull();
+    await act(async () => button("Create key").click());
+    expect(post).toHaveBeenCalledExactlyOnceWith("/bot-keys", { name: "Glass managed messages", scopes: ["glassface:message"], expires_in_days: 90 });
+  });
   it("opens a fresh normal agent form after canceling a Glass key", async () => {
     await open();
     select("Key type", "glass"); act(() => button("Cancel").click());

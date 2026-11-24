@@ -114,6 +114,8 @@ from .external_routes import router as external_router
 app.include_router(external_router)
 from .glassface_dani import router as glassface_dani_router
 app.include_router(glassface_dani_router)
+from .glassface_messages import router as glassface_messages_router
+app.include_router(glassface_messages_router)
 from .glassface_media import router as glassface_media_router
 app.include_router(glassface_media_router)
 from .agent_link import router as agent_link_router

@@ -6,13 +6,15 @@ import { SettingsGroup } from "./SettingsLayout";
 export type BotKey = { id: string; name: string; prefix: string; scopes: string[];
   expires_at: string; created_at: string; revoked_at: string | null; last_used_at: string | null };
 type KeyList = { items: BotKey[]; api_url: string; mcp_url: string };
-export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false, keyType: "agent" | "glass" = "agent") {
+type KeyType = "agent" | "glass" | "glassMessages";
+export function permissionScopes(levels: Record<string, string>, queued: boolean, runTools = false, runRead = false, sources = false, keyType: KeyType = "agent") {
+  if (keyType === "glassMessages") return ["glassface:message"];
   if (keyType === "glass") return ["glassface:dani"];
   return [...Object.entries(levels).filter(([,level]) => level !== "none").map(([group,level]) => `${group}:${level}`),
     ...(queued ? ["work:run"] : []), ...(runTools ? ["agents:session"] : []), ...(runRead ? ["agents:read"] : []),
     ...(sources ? ["sources:write"] : [])];
 }
-const scopeLabel = (scope: string) => scope === "glassface:dani" ? "Dani on Google Glass" : scope === "work:run" ? "Dani requests" : scope === "agents:session" ? "Run tools" : scope === "agents:read" ? "Runs, read" : scope === "agents:control" ? "remotea link" : scope === "sources:write" ? "Meeting submission"
+const scopeLabel = (scope: string) => scope === "glassface:message" ? "Glass managed messages" : scope === "glassface:dani" ? "Dani on Google Glass" : scope === "work:run" ? "Dani requests" : scope === "agents:session" ? "Run tools" : scope === "agents:read" ? "Runs, read" : scope === "agents:control" ? "remotea link" : scope === "sources:write" ? "Meeting submission"
   : scope.replace("organization", "Goals & projects").replace(":write", ", edit").replace(":read", ", read").replace(/^./, c => c.toUpperCase());
 /** A key that can still act: neither revoked nor past its expiry. */
 export const liveKey = (item: BotKey, now = Date.now()) => !item.revoked_at && new Date(item.expires_at).getTime() > now;
@@ -103,22 +105,22 @@ export function BotSettings({ workspace, personal = false, readOnly = false, can
 function BotKeyForm({ personal, readOnly, canDesign, busy, onCreate }: WorkspaceGrants & {
   busy: boolean; onCreate: (name: string, scopes: string[], days: number) => Promise<void>;
 }) {
-  const [keyType, setKeyType] = useState("agent"), [name, setName] = useState("");
+  const [keyType, setKeyType] = useState<KeyType>("agent"), [name, setName] = useState("");
   const [days, setDays] = useState(90), [queued, setQueued] = useState(false), [runTools, setRunTools] = useState(false), [runRead, setRunRead] = useState(false), [sources, setSources] = useState(false);
   const [levels, setLevels] = useState<Record<string,string>>({ tasks: readOnly ? "read" : "write", organization: "read", notes: "none", records: "none", schema: "read", sessions: "none", context: "none" });
-  const glass = personal && !readOnly && keyType === "glass";
-  const scopes = permissionScopes(levels, queued, runTools, runRead, sources, glass ? "glass" : "agent");
+  const glass = personal && !readOnly && keyType !== "agent";
+  const scopes = permissionScopes(levels, queued, runTools, runRead, sources, glass ? keyType : "agent");
   const valid = glass || (!!name.trim() && (Object.values(levels).some(v => v !== "none") || sources));
   return <form className="settings-form bot-key-form" onSubmit={event => {
     event.preventDefault();
-    if (valid && !busy) void onCreate(glass ? "Google Glass" : name, scopes, days);
+    if (valid && !busy) void onCreate(keyType === "glassMessages" && glass ? "Glass managed messages" : glass ? "Google Glass" : name, scopes, days);
   }}>
     {personal && !readOnly && <label className="field wide"><span className="field-label-text">Key type</span>
-      <select value={keyType} onChange={e => setKeyType(e.target.value)}>
-        <option value="agent">Agent</option><option value="glass">Google Glass</option>
+      <select value={keyType} onChange={e => setKeyType(e.target.value as KeyType)}>
+        <option value="agent">Agent</option><option value="glass">Google Glass</option><option value="glassMessages">Google Glass managed messages</option>
       </select>
     </label>}
-    {glass ? <p className="footnote">This key lets the Glass gateway ask Dani about the terminal on your headset.</p> : <>
+    {glass ? <p className="footnote">{keyType === "glassMessages" ? "Allow your Glass gateway to queue messages in your active Eridani-managed terminals." : "This key lets the Glass gateway ask Dani about the terminal on your headset."}</p> : <>
       <label className="field wide"><span className="field-label-text">Agent name</span><input autoFocus value={name} maxLength={80} required placeholder="For example, Codex" onChange={e => setName(e.target.value)}/></label>
       {[["records","Custom records (includes note content)"],["schema","Structure definitions"],["tasks","Task scheduling"],["organization","Legacy organization"],["notes","Notes"],["sessions","Agent sessions (where coding and chat work happened)"],["context","Meeting context (personal workspace only)"]].map(([group,label]) =>
         <label className="field" key={group}><span className="field-label-text">{label}</span><select value={levels[group]} onChange={e => setLevels({...levels, [group]:e.target.value})}>

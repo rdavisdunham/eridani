@@ -101,6 +101,11 @@ def parse(words, view=None):
     if screen:
         if view is not None and "destinations" in view:
             exact = [node["id"] for node in view["destinations"] if node["label"].casefold() == screen[1]]
+            if not exact and (page := re.fullmatch(r"(.+) (?:screen|page|view)", screen[1])):
+                # "The terminal screen" identifies the advertised Terminals page.
+                # Keep ambiguous labels in the semantic path and never infer a new destination.
+                labels = {page[1], page[1] + "s"}
+                exact = [node["id"] for node in view["destinations"] if node["label"].casefold() in labels]
             if len(exact) == 1 and "open" in view.get("actions", []):
                 return {"name": "navigate", "command": "open", "value": exact[0]}
         elif screen[1] in SCREENS:

@@ -736,6 +736,13 @@
   ],
   "http_routes": [
     {
+      "method": "POST",
+      "path": "/api/glassface/dani/diagnostics",
+      "handler": "gateway_trace",
+      "source": "apps/api/jarvis/glassface_media.py",
+      "feature": "live_voice"
+    },
+    {
       "method": "WEBSOCKET",
       "path": "/api/glassface/dani/live",
       "handler": "native_voice",

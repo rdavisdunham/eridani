@@ -767,6 +767,7 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     returned = threading.Event()
     resolved = []
     results = []
+    displays = []
 
     def infer(owner, path, body, *args, **kwargs):
         assert path == "responses" and kwargs["trace_content"] is False
@@ -798,6 +799,9 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                 loop.call_later(
                     1.3, self.events.put_nowait, timed("fixture boundary", 300, 400, "end", "output")
                 )
+            elif kind == "session.thinking.append" and event["content"].startswith("Glass now displays"):
+                displays.append(json.loads(event["content"].split(": ", 1)[1]))
+                self.events.put_nowait(timed("view acknowledged", 600, 650, str(len(displays)), "output"))
             elif kind == "session.commentary.append":
                 results.append(event)
                 returned.set()
@@ -838,6 +842,20 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         if expected:
             assert returned.wait(1) and len(results) == 1
             assert results[0]["delegation_id"] == "del-1" and '"Operation completed"' in results[0]["content"]
+        if expected and expected.get("command") == "set_volume":
+            for page in ("volume", "help"):
+                native.send_json(
+                    {
+                        "type": "view",
+                        "screen": "other",
+                        "page": page,
+                        "actions": ["back"],
+                        "summary": "Active volume: Medium. Earphone amp: 15 of 15.",
+                    }
+                )
+                assert native.receive_json()["text"] == "view acknowledged"
+            assert displays[0]["summary"] == "Active volume: Medium. Earphone amp: 15 of 15."
+            assert "summary" not in displays[1]
         native.send_json({"type": "stop"})
         assert native.receive_json()["reason"] == "ended"
     if not expected:

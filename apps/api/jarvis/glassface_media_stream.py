@@ -458,6 +458,12 @@ async def bridge(peer, model, key, terminal, usage, recheck, proof, seconds, *, 
                         }
                         if current_view["screen"] == "terminal":
                             display.update(label=label, summary=summary)
+                        elif (
+                            controls_enabled
+                            and current_view["screen"] == "other"
+                            and current_view.get("page") == "volume"
+                        ):
+                            display.update(summary=summary)
                         await append_context(
                             "thinking",
                             "Glass now displays the following quoted data: "

@@ -579,7 +579,7 @@ async def bridge(
                     if provider_ended:
                         continue
                     controls += 1
-                    if view is None or not ready.is_set() or not isinstance(update, dict) or controls > 512:
+                    if not ready.is_set() or not isinstance(update, dict) or controls > 512:
                         raise live.LiveFailure("Unexpected Glass control")
                     kind = update.pop("type", "")
                     label = update.pop("label", "")
@@ -593,6 +593,8 @@ async def bridge(
                             raise live.LiveFailure("Invalid playback diagnostic")
                         trace.event("headset-playback", **{"detail": update})
                         continue
+                    if view is None:
+                        raise live.LiveFailure("Unexpected Glass control")
                     if kind == "view":
                         summary = update.pop("summary", "")
                         if not isinstance(summary, str) or len(summary) > 600:

@@ -14,6 +14,8 @@ from .domain import DomainError, advisory
 from .models import BotCredential, UserAccount, now
 
 principal = ContextVar("eridani_bot_credential", default=None)
+GOOGLE_GLASS_SCOPE = "glassface:dani"
+
 SCOPES = {
     "schema:read": "Read type, field and relationship definitions",
     "schema:write": "Preview and apply workspace schema changes (owner only)",
@@ -25,7 +27,7 @@ SCOPES = {
     "organization:write": "Create and edit organization",
     "notes:read": "Read notes",
     "notes:write": "Create and edit notes",
-    "glassface:dani": "Use Dani on Google Glass and queue messages in paired Eridani-managed runs",
+    GOOGLE_GLASS_SCOPE: "Use Dani on Google Glass and queue messages in paired Eridani-managed runs",
     "work:run": "Ask Dani to work using this key's permitted records and tools",
     "sessions:read": "Read the agent session ledger: where coding and chat work happened",
     "sessions:write": "Report agent sessions and file them under issues or records",
@@ -37,7 +39,7 @@ SCOPES = {
     "sources:write": "Submit meeting transcripts and notes; reading them back needs context:read (personal workspace only)",
 }
 # Control scopes mutate on every use: viewers cannot hold them and each use is a write check.
-PRIVILEGED = {"agents:control", "agents:session", "glassface:dani"}
+PRIVILEGED = {"agents:control", "agents:session", GOOGLE_GLASS_SCOPE}
 # Meeting context is personal (plan_final.md section 6): keys holding these exist only in the personal workspace.
 PERSONAL_ONLY = {"context:read", "context:write", "sources:write"}
 COMMAND_SCOPES = {
@@ -106,7 +108,7 @@ def normalize(scopes):
     values = set(scopes)
     if not values or values - SCOPES.keys():
         raise DomainError("INVALID_ARGUMENT", "Select valid bot permissions.")
-    if "glassface:dani" in values and len(values) != 1:
+    if GOOGLE_GLASS_SCOPE in values and len(values) != 1:
         raise DomainError("INVALID_ARGUMENT", "Glass needs a dedicated key with only glassface:dani.")
     # A write scope implies its read twin where one exists (sources:write has none).
     values |= {s.replace(":write", ":read") for s in values if s.endswith(":write")} & SCOPES.keys()
@@ -146,8 +148,8 @@ def authorize(db, owner=None, required=None, *, write=False, credential_id=None)
 
 
 def google_glass(db, identity):
-    bot = authorize(db, required="glassface:dani", credential_id=identity)
-    if set(bot.scopes) != {"glassface:dani"}:
+    bot = authorize(db, required=GOOGLE_GLASS_SCOPE, credential_id=identity)
+    if set(bot.scopes) != {GOOGLE_GLASS_SCOPE}:
         raise DomainError("INSUFFICIENT_SCOPE", "Use a dedicated Google Glass key.", 403)
     return bot
 

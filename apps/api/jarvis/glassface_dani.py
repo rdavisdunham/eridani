@@ -22,6 +22,7 @@ from .domain import DomainError
 from .external_routes import Bot
 from .live_voice import LIVE_PRICE_PER_SECOND
 
+SCOPE = bot_access.GOOGLE_GLASS_SCOPE
 router = APIRouter()
 active = set()
 MAX_REQUEST_BYTES = 96_000

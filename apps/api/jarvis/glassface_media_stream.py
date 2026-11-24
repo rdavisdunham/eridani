@@ -319,6 +319,8 @@ class HeadsetPlayback:
         ):
             return  # A quiet provider clock need not wake the bone-conduction speaker.
         if self.queued + len(raw) > 8 * RATE:
+            if not self.may_play.is_set():
+                return  # Held speculative audio cannot disconnect the microphone or grow without bound.
             raise live.LiveFailure("Headset playback is too far behind")
         for offset in range(0, len(raw), MAX_FRAME):
             frame = raw[offset : offset + MAX_FRAME]
@@ -930,6 +932,7 @@ async def bridge(
                                 )
                             )
                             if echo:
+                                await release_reply()
                                 continue
                             claim = (action, words, start_ms, end_ms)
                             if action == "tell":

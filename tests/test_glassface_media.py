@@ -1024,3 +1024,18 @@ def test_semantic_resolution_cannot_grant_unadvertised_navigation_or_writes():
 def test_does_not_issue_a_proof_larger_than_the_headset_can_verify(monkeypatch):
     monkeypatch.setattr(media.work_crypto, "seal", lambda assertion: "x" * 8193)
     assert media.attest("identity", "focus", "open", "Show me that terminal") is None
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_audio_stays_bounded_until_released():
+    from jarvis.glassface_media_stream import RATE, HeadsetPlayback
+
+    playback = HeadsetPlayback()
+    playback.may_play.clear()
+    playback.add(bytes(8 * RATE))
+    playback.add(bytes(800))
+    assert playback.queued == 8 * RATE
+    playback.discard()
+    playback.may_play.set()
+    playback.add(bytes(800))
+    assert playback.queued == 800

@@ -710,3 +710,128 @@ def test_native_stream_releases_bill_and_cross_replica_lock(client, monkeypatch,
         row = db.scalar(select(BudgetReservation))
         assert row.state == "closed" and row.actual > 0
     assert identity not in routes.active
+
+
+@pytest.mark.parametrize(
+    ("phrase", "role", "delay", "expected"),
+    [
+        ("Catch me up on the exchange I just stepped away from.", "input", 0.8, {"name": "read"}),
+        ("What terminals are open?", "input", 0, {"name": "list"}),
+        (
+            "Start Codex in the Jarvis folder.",
+            "input",
+            0,
+            {"name": "start", "harness": "codex", "folder": "jarvis"},
+        ),
+        (
+            "Set the volume to medium.",
+            "input",
+            0,
+            {"name": "navigate", "command": "set_volume", "value": "medium"},
+        ),
+        ("Open the terminal list.", "output", 0, None),
+        ("Start Codex in the Jarvis folder.", "input", None, None),
+    ],
+)
+def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase, role, delay, expected):
+    import asyncio
+    import json
+    import threading
+    from contextlib import asynccontextmanager
+
+    from jarvis import glassface_media_stream as stream
+    from jarvis import memory_learning
+
+    view = {
+        "screen": "terminal",
+        "session": "desktop:surf-B",
+        "identity": "id-B",
+        "binding": "bind-B",
+        "page": "reader",
+        "actions": ["open", "back", "set_volume"],
+        "selection": "Release notes",
+    }
+    returned = threading.Event()
+    resolved = []
+    results = []
+
+    def infer(owner, path, body, *args, **kwargs):
+        assert path == "responses" and kwargs["trace_content"] is False
+        assert json.loads(body["input"]) == {"wearer": phrase, "screen": "terminal"}
+        assert body["text"]["format"]["schema"]["properties"]["name"]["enum"] == ["list", "read", "none"]
+        resolved.append(True)
+        return {"choices": [{"message": {"content": '{"name":"read","query":""}'}}]}
+
+    class Provider:
+        def __init__(self):
+            self.events = asyncio.Queue()
+
+        async def send(self, raw):
+            event = json.loads(raw)
+            kind = event["type"]
+            if kind == "session.start":
+                assert "Delegate" in event["session"]["instructions"]
+                self.events.put_nowait({"type": "session.started"})
+            elif kind == "session.input_audio.append":
+                loop = asyncio.get_running_loop()
+                delegate = {
+                    "type": "session.delegation.created",
+                    "delegation": {"target": "client", "id": "del-1"},
+                }
+                if delay is not None:
+                    loop.call_later(delay, self.events.put_nowait, delegate)
+                    loop.call_later(delay + 0.02, self.events.put_nowait, delegate)
+                self.events.put_nowait(timed(phrase, 30, 160, "observed", role))
+                loop.call_later(
+                    1.3, self.events.put_nowait, timed("fixture boundary", 300, 400, "end", "output")
+                )
+            elif kind == "session.commentary.append":
+                results.append(event)
+                returned.set()
+            elif kind == "session.close":
+                self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 15}})
+
+        async def recv(self):
+            return json.dumps(await self.events.get())
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield Provider()
+
+    monkeypatch.setattr(stream, "connect", connection)
+    monkeypatch.setattr(memory_learning, "provider_request", infer)
+    _, headers = key(client, [routes.SCOPE])
+    assert client.get("/api/glassface/dani/status", headers=headers).json()["screenControls"] is True
+    ticket = client.post(ROOT + "/tickets", headers=headers, json={**BODY, "view": view})
+    assert ticket.status_code == 200, ticket.text
+    claims = []
+    with client.websocket_connect(ROOT) as native:
+        native.send_json({"type": "start", "ticket": ticket.json()["ticket"]})
+        assert native.receive_json()["type"] == "ready"
+        native.send_bytes(bytes(800))
+        while True:
+            message = native.receive_json()
+            if message.get("text") == "fixture boundary":
+                break
+            if message["type"] == "utterance":
+                claims.append(message)
+                native.send_json({"type": "receipt", "operation": "not-issued", "text": "Wrong result"})
+                native.send_json(
+                    {"type": "receipt", "operation": message["operation"], "text": "Operation completed"}
+                )
+                native.send_json(
+                    {"type": "receipt", "operation": message["operation"], "text": "Duplicate result"}
+                )
+        if expected:
+            assert returned.wait(1) and len(results) == 1
+            assert results[0]["delegation_id"] == "del-1" and '"Operation completed"' in results[0]["content"]
+        native.send_json({"type": "stop"})
+        assert native.receive_json()["reason"] == "ended"
+    if not expected:
+        assert not claims
+        return
+    assert len(claims) == 1
+    verified = client.post(ROOT + "/verify", headers=headers, json={"proof": claims[0]["proof"]}).json()
+    assert verified["action"] == expected["name"] and verified["tool"] == expected
+    assert verified["text"] == phrase and verified["view"] == view
+    assert bool(resolved) is (expected["name"] == "read")

@@ -89,7 +89,7 @@ def cosine(a, b):
     return sum(x * y for x, y in zip(a, b)) / den if den else 0.0
 
 
-def provider_request(owner, path, payload, model, allowance, timeout=30, *, agent=None):
+def provider_request(owner, path, payload, model, allowance, timeout=30, *, agent=None, trace_content=True):
     """Every attempted cloud call has a budget reservation, including retries. `agent` prices the call
     (model_map.costing); Luna at the Standard tier by default."""
     settings = get_settings()
@@ -102,7 +102,7 @@ def provider_request(owner, path, payload, model, allowance, timeout=30, *, agen
         budget.reserve(db, owner, reservation, allowance, model, optional=True)
     uncertain = True
     traced = llm_trace.begin(model=model, owner=owner, kind="embedding" if path == "embeddings" else "generation",
-                             input=payload.get("input"), model_parameters=_parameters(payload))
+                             input=payload.get("input") if trace_content else None, model_parameters=_parameters(payload))
     try:
         with httpx.Client(timeout=timeout) as client:
             response = client.post(
@@ -137,7 +137,7 @@ def provider_request(owner, path, payload, model, allowance, timeout=30, *, agen
         with session_scope() as db:
             budget.record_usage(db, owner, reservation, reservation, model, usage, cost)
         uncertain = False
-        traced.done(output=_answer(path, data), usage=usage, cost=cost)
+        traced.done(output=_answer(path, data) if trace_content else None, usage=usage, cost=cost)
         if path == "responses":
             from .responses_adapter import normalize
             if data.get("status") != "completed":
@@ -153,7 +153,7 @@ def provider_request(owner, path, payload, model, allowance, timeout=30, *, agen
                 data["choices"][0]["message"]["refusal"] = refusal
         return data
     except BaseException as error:
-        traced.failed(error)
+        traced.failed(error if trace_content else RuntimeError(type(error).__name__))
         raise
     finally:
         traced.end()

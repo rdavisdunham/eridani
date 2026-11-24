@@ -15,7 +15,7 @@ from pydantic import Field
 from starlette.concurrency import run_in_threadpool
 from websockets.exceptions import WebSocketException
 
-from . import glassface_live, glassface_media_stream, work_crypto
+from . import glassface_live, glassface_media_stream, glassface_tools, work_crypto
 from .db import session_scope
 from .domain import DomainError
 from .external_routes import Bot
@@ -93,7 +93,7 @@ def consume(ticket):
     return identity, body
 
 
-def attest(identity, focus, action, text, view=None):
+def attest(identity, focus, action, text, view=None, *, read_tool=None):
     operation = str(uuid4())
     assertion = {
         "purpose": "glass-live-utterance-v1",
@@ -103,6 +103,11 @@ def attest(identity, focus, action, text, view=None):
         "text": text,
         "operation": operation,
     }
+    if action in {"list", "read", "navigate", "start"}:
+        tool = read_tool if action in {"list", "read"} and read_tool else glassface_tools.parse(text)
+        if not tool or tool["name"] != action or not view or "actions" not in view:
+            return None
+        assertion["tool"] = tool
     if view is not None:
         assertion["view"] = view
     return {
@@ -126,7 +131,10 @@ def verify(identity, proof):
         or obj.get("credential") != identity
     ):
         raise invalid()
-    return {key: obj[key] for key in ("focus", "text", "operation", "view") if key in obj}
+    result = {key: obj[key] for key in ("focus", "text", "operation", "view") if key in obj}
+    if "tool" in obj:
+        result.update(tool=obj["tool"], action=obj["action"])
+    return result
 
 
 @router.post("/api/glassface/dani/live/tickets")
@@ -180,11 +188,11 @@ async def native_voice(peer: WebSocket):
         # Allow for setup, the media deadline, graceful close and billing rounding.
         async with leased_slot(identity, settings.live_model, usage, LIVE_SECONDS + 20) as recheck:
 
-            async def proof(action, words, view=None):
+            async def proof(action, words, view=None, *, read_tool=None):
                 if not body["focus"]:
                     return None
                 await recheck()
-                return attest(identity, body["focus"], action, words, view)
+                return attest(identity, body["focus"], action, words, view, read_tool=read_tool)
 
             await glassface_media_stream.bridge(
                 peer,
@@ -196,6 +204,9 @@ async def native_voice(peer: WebSocket):
                 proof,
                 LIVE_SECONDS,
                 view=body.get("view"),
+                resolve_read=lambda words, scene: run_in_threadpool(
+                    glassface_tools.resolve_read, identity, words, scene
+                ),
             )
     except DomainError as exc:
         reason, code = ("unavailable", 1013) if exc.status >= 429 else ("unauthorized", 1008)

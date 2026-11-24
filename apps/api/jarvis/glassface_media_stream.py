@@ -25,6 +25,7 @@ log = logging.getLogger("uvicorn.error")
 RATE = 8000
 READ_SETTLE_SECONDS = 0.55
 SEMANTIC_SETTLE_SECONDS = 0.9
+TRANSCRIPT_GAP_MS = 1800
 MAX_FRAME = 800  # 100 ms of G.711, one byte per sample.
 # Values at or above approximately 1,400 PCM16 counts help defer a notification while speech is starting.
 ACTIVE_SAMPLES = bytes(int((~code & 0x7F) >= 56) for code in range(256))
@@ -237,7 +238,7 @@ class UserSpeech:
             return None
         start, end = span
         # A gap can start a new request. A gap does not authorize an unfinished request.
-        if self.end >= 0 and start - self.end > 1800:
+        if self.end >= 0 and start - self.end > TRANSCRIPT_GAP_MS:
             self.text, self.blocked = "", False
         if start < self.end:
             self.text, self.blocked = "", True
@@ -1159,6 +1160,11 @@ async def bridge(
                                     if tree and action in {"lookup", "find"}
                                     else READ_SETTLE_SECONDS
                                 )
+                                # A "show me" prefix can parse as a read or list before
+                                # the destination's final word arrives. Allow the same
+                                # gap that groups successive user transcript fragments.
+                                if tree and action in {"read", "list"} and re.search(r"\bshow\b", words, re.I):
+                                    settle = TRANSCRIPT_GAP_MS / 1000
                                 pending_read = (clock() + settle, *claim)
                         if pending_read is None or not checking and pending_read[1] == "lookup":
                             await release_reply()

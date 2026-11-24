@@ -727,12 +727,14 @@
     "source_files": [
       "apps/api/jarvis/agent_control.py",
       "apps/api/jarvis/remotea_routes.py",
+      "apps/api/jarvis/glassface_messages.py",
       "apps/api/jarvis/agent_link.py",
       "apps/api/jarvis/run_coordinator.py",
       "apps/api/jarvis/agent_automation.py"
     ],
     "regression_files": [
       "tests/test_agent_runs.py",
+      "tests/test_glassface_messages.py",
       "tests/test_agent_link.py",
       "tests/test_agent_security.py",
       "tests/test_agent_voice.py",

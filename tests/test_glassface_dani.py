@@ -145,6 +145,7 @@ def test_authentication_scope_and_bounded_inputs(client, monkeypatch):
     readiness = client.get("/api/glassface/dani/status", headers=glass)
     assert readiness.status_code == 200 and readiness.json() == {
         "ready": True,
+        "glassDiagnostics": True,
         "live": False,
         "model": get_settings().live_model,
     }

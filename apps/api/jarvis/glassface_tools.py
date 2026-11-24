@@ -102,6 +102,12 @@ def parse(words):
         return {"name": "navigate", "command": "open", "value": SCREENS[screen[1]]}
     if text in NAVIGATION:
         return {"name": "navigate", "command": NAVIGATION[text]}
+    choice = re.fullmatch(r"(?:select|choose) (?:the )?([\w][\w ./’'-]{0,159})", text)
+    folder = re.fullmatch(r"enter (?:the )?([\w][\w ./’'-]{0,159}?) (?:directory|folder)", text)
+    if choice or folder:
+        value = (choice or folder)[1]
+        if not re.search(r"\b(?:if|unless|maybe|instead|then|don't|not)\b", value):
+            return {"name": "navigate", "command": "select" if choice else "enter_folder", "value": value}
     level = re.fullmatch(
         r"(?:set|change|turn|put) (?:the )?volume (?:to )?(mute|quiet|low|medium|high|highest|up|down)", text
     )

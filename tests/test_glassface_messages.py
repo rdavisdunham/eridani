@@ -2,12 +2,13 @@
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select
-
 from jarvis import agent_receipts
 from jarvis.db import session_scope
 from jarvis.session_models import AgentCommand, AgentHost, AgentRun, AgentSession
-from test_agent_runs import attached, host, quiet, start, task  # noqa: F401 - fixtures
+from sqlalchemy import select
+from test_agent_runs import attached, start, task
+from test_agent_runs import host as host
+from test_agent_runs import quiet as quiet
 from test_glassface_dani import key
 
 STATUS = "/api/glassface/managed-messages/status"

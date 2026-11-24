@@ -741,6 +741,18 @@ def test_native_stream_releases_bill_and_cross_replica_lock(client, monkeypatch,
             0,
             {"name": "navigate", "command": "enter_folder", "value": "glassface"},
         ),
+        ("What did I last ask?", "input", None, {"name": "read"}),
+        ("What did I last ask?", "input", 0.85, {"name": "read"}),
+        ("Read the latest reply.", "input", 0.85, {"name": "read"}),
+        ("List my terminals.", "input", None, {"name": "list"}),
+        (
+            "Open the terminal list.",
+            "input",
+            None,
+            {"name": "navigate", "command": "open", "value": "terminals"},
+        ),
+        ("Select the release notes.", "input", None, None),
+        ("Set the volume to medium.", "input", None, None),
         ("Open the terminal list.", "output", 0, None),
         ("Start Codex in the Jarvis folder.", "input", None, None),
     ],
@@ -832,6 +844,10 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                 break
             if message["type"] == "utterance":
                 claims.append(message)
+                if phrase == "Read the latest reply.":
+                    import time
+
+                    time.sleep(0.45)  # Late delegation arrives while the device is still working.
                 native.send_json({"type": "receipt", "operation": "not-issued", "text": "Wrong result"})
                 native.send_json(
                     {"type": "receipt", "operation": message["operation"], "text": "Operation completed"}
@@ -841,7 +857,9 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
                 )
         if expected:
             assert returned.wait(1) and len(results) == 1
-            assert results[0]["delegation_id"] == "del-1" and '"Operation completed"' in results[0]["content"]
+            expected_delegation = None if delay is None or phrase == "What did I last ask?" else "del-1"
+            assert results[0]["delegation_id"] == expected_delegation
+            assert '"Operation completed"' in results[0]["content"]
         if expected and expected.get("command") == "set_volume":
             for page in ("volume", "help"):
                 native.send_json(
@@ -866,4 +884,4 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     assert verified["action"] == expected["name"] and verified["tool"] == expected
     assert claims[0].get("command") == expected.get("command")
     assert verified["text"] == phrase and verified["view"] == view
-    assert bool(resolved) is (expected["name"] == "read")
+    assert bool(resolved) is phrase.startswith("Catch me up")

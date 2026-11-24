@@ -148,7 +148,11 @@ def upload(project, identity, name, inputs, outputs, tracks):
         response = api.post("/api/public/otel/v1/traces", content=packet.SerializeToString(),
                             headers={"Content-Type": "application/x-protobuf", "x-langfuse-ingestion-version": "4"})
         response.raise_for_status()
-        if ExportTraceServiceResponse.FromString(response.content).partial_success.rejected_spans:
+        if response.headers.get("content-type", "").startswith("application/json"):
+            rejected = int(response.json().get("partialSuccess", {}).get("rejectedSpans", 0))
+        else:
+            rejected = ExportTraceServiceResponse.FromString(response.content).partial_success.rejected_spans
+        if rejected:
             raise ValueError("Langfuse rejected the observation")
 
 
@@ -162,6 +166,7 @@ class Session:
         self.tracks = {}
         self.size = 0
         self.offsets = {}
+        self.last_audio_at = {}
 
     def event(self, kind, **data):
         self.events.append({"ms": round((time.monotonic()-self.start)*1000), "event": kind, **data})
@@ -171,7 +176,13 @@ class Session:
     def audio(self, lane, data):
         if not data:
             return
-        self.tracks.setdefault(lane, bytearray()).extend(data)
+        now = time.monotonic()
+        track = self.tracks.setdefault(lane, bytearray())
+        if now - self.last_audio_at.get(lane, -1e6) > .25 or not track:
+            self.events.append({"ms": round((now-self.start)*1000), "event": "audio-position",
+                                "lane": lane, "sample": self.offsets.get(lane,0) + len(track)})
+        self.last_audio_at[lane] = now
+        track.extend(data)
         self.maybe_flush()
 
     def maybe_flush(self):

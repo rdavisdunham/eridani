@@ -57,3 +57,24 @@ def test_timeline_contains_distinct_audio_lanes_and_redacts_credentials(monkeypa
     with wave.open(io.BytesIO(trace.wav_audio(lanes["microphone"]))) as audio:
         assert (audio.getframerate(), audio.getnframes()) == (8000, 800)
     assert trace.scrub({"ticket": "secret", "content": "sk-lf-synthetic-secret-value"}) == {"content":"[redacted]"}
+
+
+def test_ingestion_requires_positive_otlp_ack(monkeypatch):
+    import httpx
+    import pytest
+    from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
+    responses = [{"partialSuccess": {"rejectedSpans": "1"}}, {}]
+    original = httpx.Client
+    def ingest(req):
+        assert req.url.host == "cloud.langfuse.com" and req.url.path.endswith("/otel/v1/traces")
+        assert req.headers["x-langfuse-ingestion-version"] == "4"
+        packet = ExportTraceServiceRequest.FromString(req.content)
+        span, = packet.resource_spans[0].scope_spans[0].spans
+        assert span.trace_id.hex() == TRACE["trace_id"]
+        return httpx.Response(200,json=responses.pop(0))
+    monkeypatch.setattr(httpx,"Client",lambda **kw: original(**kw,transport=httpx.MockTransport(ingest)))
+    def send():
+        trace.upload(trace.Project(**PROFILE),TRACE["trace_id"],"Glass · test",{},{"ok": True},{})
+    with pytest.raises(ValueError,match="rejected"):
+        send()
+    send()

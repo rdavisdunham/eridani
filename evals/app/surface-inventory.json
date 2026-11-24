@@ -772,6 +772,20 @@
     },
     {
       "method": "GET",
+      "path": "/api/glassface/managed-messages/status",
+      "handler": "status",
+      "source": "apps/api/jarvis/glassface_messages.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "POST",
+      "path": "/api/glassface/runs/{identity}/messages",
+      "handler": "message",
+      "source": "apps/api/jarvis/glassface_messages.py",
+      "feature": "agent_control"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/accounts",
       "handler": "overview",
       "source": "apps/api/jarvis/accounts.py",

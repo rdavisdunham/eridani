@@ -94,7 +94,7 @@ def route_owner(path, source):
     if "/auth/" in path or path.endswith("/bootstrap"):
         return "accounts"
     if (path.startswith("/api/v1/remotea") or "/external/agents/session/" in path
-            or path == "/api/v1/external/agents/link"):
+            or path == "/api/v1/external/agents/link" or source == "apps/api/jarvis/glassface_messages.py"):
         # In-session run tools (task_plan, task_step, task_interview, submit_plan) and the host link too.
         return "agent_control"
     if "/external/agents/" in path:

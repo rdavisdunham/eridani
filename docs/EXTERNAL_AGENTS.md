@@ -333,3 +333,9 @@ verified current connections. When remotea is turned on and its server reports a
 agent link, the drawer shows **Live/Restoring in remotea · since …** from the server instead; see
 [Agent control](AGENT_CONTROL.md) for the link protocol, its `agents:control` key and collector parity. Existing data has no trustworthy terminal-observation
 timestamp; transcript activity and filing edits must not be treated as heartbeats.
+
+### Google Glass managed messages
+
+In your personal workspace, turn on Remotea and pair its host. Under **Settings → Connections → Agent keys → Add agent**, choose **Google Glass managed messages** and create a dedicated key. On DavisPC run `~/.local/share/glassface-m1/connect-eridani --managed-messages` and enter the key at its hidden prompt. The separate **Google Glass** key handles Dani voice. Revoke either key independently in Connected agents.
+
+The gateway authenticates with a Bearer token at `GET /api/glassface/managed-messages/status`. To queue a message, send `POST /api/glassface/runs/{run_id}/messages` with the persistent Remotea `server_id`, `surf`, `generation`, `incarnation`, message `text`, and a UUID `action_id`. Keep the same UUID and body after a lost response. A queued receipt records acceptance in the linked host's command outbox. The host applies its normal generation, process and automation fences. Open pending approvals, paused runs, offline hosts, and terminal takeovers remain under the owner's existing Eridani controls.

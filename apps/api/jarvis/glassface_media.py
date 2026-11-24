@@ -107,6 +107,8 @@ def attest(identity, focus, action, text, view=None, *, read_tool=None):
         tool = read_tool if action in {"list", "read"} and read_tool else glassface_tools.parse(text)
         if not tool or tool["name"] != action or not view or "actions" not in view:
             return None
+        if tool.get("command") in {"select", "enter_folder"} and tool.get("value") and not view.get("choices"):
+            return None
         assertion["tool"] = tool
     if view is not None:
         assertion["view"] = view

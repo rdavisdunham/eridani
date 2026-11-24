@@ -729,6 +729,18 @@ def test_native_stream_releases_bill_and_cross_replica_lock(client, monkeypatch,
             0,
             {"name": "navigate", "command": "set_volume", "value": "medium"},
         ),
+        (
+            "Select the release notes.",
+            "input",
+            0,
+            {"name": "navigate", "command": "select", "value": "release notes"},
+        ),
+        (
+            "Enter the Glassface folder.",
+            "input",
+            0,
+            {"name": "navigate", "command": "enter_folder", "value": "glassface"},
+        ),
         ("Open the terminal list.", "output", 0, None),
         ("Start Codex in the Jarvis folder.", "input", None, None),
     ],
@@ -748,7 +760,8 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
         "identity": "id-B",
         "binding": "bind-B",
         "page": "reader",
-        "actions": ["open", "back", "set_volume"],
+        "actions": ["open", "back", "set_volume", "select", "enter_folder"],
+        "choices": ["Release notes", "Glassface"],
         "selection": "Release notes",
     }
     returned = threading.Event()

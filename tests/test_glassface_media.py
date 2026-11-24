@@ -833,5 +833,6 @@ def test_verified_live_tools_and_correlated_receipts(client, monkeypatch, phrase
     assert len(claims) == 1
     verified = client.post(ROOT + "/verify", headers=headers, json={"proof": claims[0]["proof"]}).json()
     assert verified["action"] == expected["name"] and verified["tool"] == expected
+    assert claims[0].get("command") == expected.get("command")
     assert verified["text"] == phrase and verified["view"] == view
     assert bool(resolved) is (expected["name"] == "read")

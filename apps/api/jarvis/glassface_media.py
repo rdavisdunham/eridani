@@ -115,6 +115,7 @@ def attest(identity, focus, action, text, view=None, *, read_tool=None):
         "action": action,
         "operation": operation,
         "proof": work_crypto.seal(assertion),
+        **({"command": assertion["tool"]["command"]} if action == "navigate" else {}),
     }
 
 

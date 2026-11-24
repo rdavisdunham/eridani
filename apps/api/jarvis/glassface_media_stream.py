@@ -26,6 +26,9 @@ RATE = 8000
 READ_SETTLE_SECONDS = 0.55
 SEMANTIC_SETTLE_SECONDS = 0.9
 TRANSCRIPT_GAP_MS = 1800
+RESULT_SPEECH_WAIT = 6.0
+# Ignore near-zero PCMU dither when waiting for the end of a speculative reply.
+VOICE_ACTIVITY = bytes(int((~code & 0x7F) >= 8) for code in range(256))
 MAX_FRAME = 800  # 100 ms of G.711, one byte per sample.
 # Values at or above approximately 1,400 PCM16 counts help defer a notification while speech is starting.
 ACTIVE_SAMPLES = bytes(int((~code & 0x7F) >= 56) for code in range(256))
@@ -338,7 +341,7 @@ class HeadsetPlayback:
     def withheld(self, raw):
         # GPT-Live PCMU has no turn IDs or output-audio-done event. Count quiet
         # media at the end of a discarded burst, or wait for a gap in arrivals.
-        voice = raw.rstrip(b"\x7f\xff")
+        voice = raw.translate(VOICE_ACTIVITY).rstrip(b"\0")
         if voice:
             self.quiet_samples = len(raw) - len(voice)
             self.withheld_until = asyncio.get_running_loop().time() + .35
@@ -495,7 +498,10 @@ async def bridge(
         controls_enabled = view is not None and "actions" in view
         issued = {}
         deadlines = {}
-        completed = {}
+        recent_reports = {}
+        late_links = {}
+        speech_check = None
+        spoken_frames = 0
         results = asyncio.Queue(maxsize=128)
         result_appends = {}
         worker_requests = {}
@@ -544,7 +550,7 @@ async def bridge(
             )
 
         async def report_results():
-            nonlocal poll_worker
+            nonlocal poll_worker, speech_check
             while True:
                 operation, text, delegated = await results.get()
                 question = worker_requests.pop(operation, None)
@@ -572,14 +578,21 @@ async def bridge(
                     # A receipt is a tool boundary, not an audio boundary. Suppress
                     # the end of a speculative sentence even if it spans the receipt.
                     await append_context("thinking", "Glass tool result (quoted data): " + parts[0], delegated)
+                    max_wait = clock() + 2
                     await asyncio.sleep(.35)
-                    while (delay := downlink.withheld_until - clock()) > 0:
+                    while (delay := min(max_wait, downlink.withheld_until) - clock()) > 0:
                         await asyncio.sleep(min(.35, delay))
                 for part in parts[:-1]:
                     await append_context("thinking", "Glass tool result, quoted data (continued): " + part, delegated)
                 summary = "Glass returned this quoted result. Report the actual outcome: " + parts[-1]
                 if len(parts) > 1:
                     summary = "Report the Glass result, including the preceding quoted parts. Final part: " + parts[-1]
+                delegated = late_links.pop(operation, delegated)
+                if len(recent_reports) >= 128:
+                    recent_reports.pop(next(iter(recent_reports)))
+                recent_reports[operation] = (summary, spoken_frames)
+                if operation in awaiting or operation.startswith("worker:"):
+                    speech_check = (clock() + RESULT_SPEECH_WAIT, turn, spoken_frames, operation, summary)
                 await append_context("commentary", summary, delegated, receipt=(operation, delegated, summary, False))
                 awaiting.pop(operation, None)
 
@@ -669,9 +682,6 @@ async def bridge(
                             trace.event("headset-result", operation=operation, text=text)
                         delegated = issued.pop(operation)
                         deadlines.pop(operation, None)
-                        if len(completed) >= 128:
-                            completed.pop(next(iter(completed)))
-                        completed[operation] = text
                         await results.put((operation, text, delegated))
                         continue
                     if kind == "receipt" and set(update) == {"text"}:
@@ -984,6 +994,9 @@ async def bridge(
                     return
                 elif kind == "session.commentary.appended":
                     delivered = result_appends.pop(event.get("client_event_id"), None)
+                    if trace and delivered:
+                        trace.event("provider-receipt", operation=delivered[0], delegation=delivered[1])
+                        log.info("Glass tool result acknowledged trace=%s operation=%s", trace.id, delivered[0])
                     if delivered and delivered[0].startswith("worker:") and worker_identity:
                         await asyncio.to_thread(glassface_work.reported, worker_identity, delivered[0][7:])
                 elif kind == "error":
@@ -1024,10 +1037,16 @@ async def bridge(
                         unclaimed = None
                         if operation in issued:
                             issued[operation] = ident
+                        elif operation in recent_reports:
+                            summary, before = recent_reports[operation]
+                            if spoken_frames == before:
+                                await append_context("commentary", summary, ident, receipt=(operation, ident, summary, False))
+                            else:
+                                await append_context("thinking", summary, ident)
                         else:
-                            # Link the actual outcome to a late delegation without speaking or acting twice.
-                            for part in quoted_parts(completed.get(operation, "Outcome unavailable")):
-                                await append_context("thinking", "Previous Glass tool result, quoted data: " + part, ident)
+                            # The headset replied, but the worker submission or playback pause
+                            # is still in progress. Bind the final result to this delegation.
+                            late_links[operation] = ident
                     else:
                         delegation = (ident, clock() + 4)
                         await append_context(
@@ -1187,6 +1206,9 @@ async def bridge(
 
         async def to_glass():
             def played(raw):
+                nonlocal spoken_frames
+                if 1 in raw.translate(VOICE_ACTIVITY):
+                    spoken_frames += 1
                 if trace:
                     trace.audio("downlink", raw)
                 playback.audio(raw, 1000 * (clock() - epoch), mic_bytes * 1000 / RATE)
@@ -1194,7 +1216,7 @@ async def bridge(
             await downlink.play(peer, played)
 
         async def check_grant():
-            nonlocal delegation, waiting_tool, poll_worker
+            nonlocal delegation, waiting_tool, poll_worker, speech_check
             await asyncio.wait_for(ready.wait(), timeout=10)
             opened = clock()
             while True:
@@ -1202,6 +1224,15 @@ async def bridge(
                 if clock() - (last_audio or opened) > 10:
                     raise TimeoutError("Glass stopped sending microphone audio")
                 await recheck()
+                if speech_check and clock() >= speech_check[0]:
+                    _, original_turn, before, operation, summary = speech_check
+                    speech_check = None
+                    if turn == original_turn and spoken_frames == before and speaking_since is None:
+                        # A verified result may be accepted without an audible response.
+                        # Re-present only the outcome, once, while the same wearer turn is quiet.
+                        if trace:
+                            trace.event("quiet-result-reminder", operation=operation)
+                        await append_context("commentary", summary, receipt=(operation, None, summary, True))
                 if poll_worker:
                     # Clear before awaiting so a concurrent submit cannot lose its wake-up.
                     poll_worker = False

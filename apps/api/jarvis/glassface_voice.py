@@ -91,10 +91,10 @@ def _gemini_setup_payload(model: str, thinking: Literal["low", "medium", "high"]
             "realtimeInputConfig": {
                 "automaticActivityDetection": {
                     "disabled": False,
-                    "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
-                    "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                    "startOfSpeechSensitivity": "START_SENSITIVITY_HIGH",
+                    "endOfSpeechSensitivity": "END_SENSITIVITY_HIGH",
                     "prefixPaddingMs": 120,
-                    "silenceDurationMs": 550,
+                    "silenceDurationMs": 450,
                 },
                 "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
             },

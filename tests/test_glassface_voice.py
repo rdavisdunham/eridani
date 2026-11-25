@@ -133,10 +133,9 @@ def test_bridge_gpt_multi_turn_and_interrupt():
         provider = FakeProviderWS(
             [
                 {"type": "session.started"},
-                {"type": "conversation.item.input_audio_transcription.completed", "transcript": "Hello Marin."},
-                {"type": "response.created"},
-                {"type": "response.output_audio_transcript.delta", "delta": "Hi Davin!"},
-                {"type": "response.output_audio.delta", "delta": pcmu_audio},
+                {"type": "session.input_transcript.delta", "delta": "Hello Marin."},
+                {"type": "session.output_transcript.delta", "delta": "Hi Davin!"},
+                {"type": "session.output_audio.delta", "delta": pcmu_audio},
             ]
         )
 
@@ -175,11 +174,11 @@ def test_bridge_gpt_multi_turn_and_interrupt():
         await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
         await task
 
-        # Clean session.start has NO delegation field
+        # Clean session.start uses OpenAI v1/live/sessions event names (NO delegation field)
         assert provider.sent[0]["type"] == "session.start"
         assert "delegation" not in provider.sent[0]["session"]
-        assert any(m.get("type") == "input_audio_buffer.append" for m in provider.sent)
-        assert any(m.get("type") == "response.cancel" for m in provider.sent)
+        assert any(m.get("type") == "session.input_audio.append" for m in provider.sent)
+        assert not any(m.get("type") == "response.cancel" for m in provider.sent)
         captions = [(m["role"], m["text"]) for m in peer.sent_json if m.get("type") == "caption"]
         assert ("user", "Hello Marin.") in captions
         assert ("assistant", "Hi Davin!") in captions

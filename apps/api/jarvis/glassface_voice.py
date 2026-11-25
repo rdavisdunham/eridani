@@ -46,7 +46,10 @@ active_peers: dict[str, WebSocket] = {}
 VOICE_INSTRUCTIONS = (
     "You are Dani, Davin's warm, helpful voice assistant on Google Glass. "
     "Keep spoken replies natural, conversational, and concise — usually 1 to 2 short sentences "
-    "unless Davin asks for more detail. Wait for Davin to speak before replying."
+    "unless Davin asks for more detail. Be strictly honest about your capabilities: you do NOT "
+    "have live internet access, web search, or external tools in this voice session, so never "
+    "claim to have searched online or verified recent news you do not know. Wait for Davin to "
+    "speak before replying."
 )
 
 
@@ -340,7 +343,6 @@ async def bridge_gpt(
         session_started_at: float | None = None
         provider_ended = False
         drained = False
-        responding = False
 
         downlink = GeminiDownlink()
         ws_write = asyncio.Lock()
@@ -354,7 +356,6 @@ async def bridge_gpt(
                 await peer.send_json(payload)
 
         async def from_glass() -> None:
-            nonlocal responding
             audio_cursor = 0.0
             while True:
                 message = await peer.receive()
@@ -373,10 +374,6 @@ async def bridge_gpt(
                         return
                     if kind == "interrupt":
                         await downlink.clear(peer)
-                        if responding:
-                            responding = False
-                            with suppress(OSError, WebSocketException):
-                                await send_ws({"type": "response.cancel", "event_id": str(uuid4())})
                         continue
                     continue
 
@@ -391,14 +388,13 @@ async def bridge_gpt(
 
                 await send_ws(
                     {
-                        "type": "input_audio_buffer.append",
-                        "event_id": str(uuid4()),
+                        "type": "session.input_audio.append",
                         "audio": base64.b64encode(raw).decode("ascii"),
                     }
                 )
 
         async def from_provider() -> None:
-            nonlocal session_started_at, provider_ended, drained, responding
+            nonlocal session_started_at, provider_ended, drained
             while True:
                 try:
                     raw_event = await ws.recv()
@@ -411,6 +407,7 @@ async def bridge_gpt(
                 event = json.loads(raw_event)
                 if not isinstance(event, dict):
                     raise live.LiveFailure("Unexpected GPT-Live message")
+                usage.observe(event)
                 kind = event.get("type")
 
                 if kind == "session.started" and not ready.is_set():
@@ -430,32 +427,25 @@ async def bridge_gpt(
                 if not ready.is_set():
                     continue
 
-                if kind == "response.created":
-                    responding = True
-                elif kind in {"response.done", "response.cancelled"}:
-                    responding = False
-                elif kind == "input_audio_buffer.speech_started":
+                if kind in {"session.output_audio.clear", "input_audio_buffer.speech_started"}:
                     if downlink.audible:
                         await downlink.clear(peer)
                     else:
                         downlink.discard()
-                elif kind == "response.output_audio.delta":
+                elif kind == "session.output_audio.delta":
                     b64 = event.get("delta")
                     if isinstance(b64, str) and b64:
                         audio = base64.b64decode(b64, validate=True)
                         if audio:
                             downlink.add(audio)
-                elif kind == "response.output_audio_transcript.delta":
+                elif kind == "session.output_transcript.delta":
                     delta = event.get("delta")
                     if isinstance(delta, str) and delta:
                         await send_peer_json({"type": "caption", "role": "assistant", "text": delta[:4096]})
-                elif kind in {
-                    "conversation.item.input_audio_transcription.delta",
-                    "conversation.item.input_audio_transcription.completed",
-                }:
-                    text = event.get("delta") if kind.endswith(".delta") else event.get("transcript")
-                    if isinstance(text, str) and text:
-                        await send_peer_json({"type": "caption", "role": "user", "text": text[:4096]})
+                elif kind == "session.input_transcript.delta":
+                    delta = event.get("delta")
+                    if isinstance(delta, str) and delta:
+                        await send_peer_json({"type": "caption", "role": "user", "text": delta[:4096]})
                 elif kind == "session.closed":
                     provider_ended = True
                     await downlink.frames.join()

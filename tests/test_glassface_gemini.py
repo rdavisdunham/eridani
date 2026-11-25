@@ -123,10 +123,13 @@ def test_setup_message_enforces_non_blocking_tools_and_thinking_level():
     ext = gemini.setup_message("gemini-3.8-live-extended-thinking", True, thinking_level="high")["setup"]
     assert ext["model"] == "models/gemini-3.8-live-extended-thinking"
     assert ext["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "HIGH"}
+    default_ext = gemini.setup_message("gemini-3.8-live-extended-thinking", True)["setup"]
+    assert default_ext["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "LOW"}
     assert ext["inputAudioTranscription"] == {}
     assert ext["outputAudioTranscription"] == {}
     decls = ext["tools"][0]["functionDeclarations"]
     assert {d["name"] for d in decls} == {
+        "adjust_setting",
         "navigate_glass",
         "open_terminal",
         "list_terminals",
@@ -135,6 +138,29 @@ def test_setup_message_enforces_non_blocking_tools_and_thinking_level():
         "send_terminal_message",
     }
     assert all(d["behavior"] == "NON_BLOCKING" for d in decls)
+
+    # Verify flexible tool normalization across settings, singular/plural screens, and terminal routing
+    assert gemini.normalize_tool_call("adjust_setting", {"setting": "volume", "value": "Medium"}) == (
+        "navigate",
+        {"name": "navigate", "command": "set_volume", "value": "Medium"},
+    )
+    assert gemini.normalize_tool_call("adjust_setting", {"setting": "earphone_amp", "value": "10"}) == (
+        "navigate",
+        {"name": "navigate", "command": "set_earphone_amp", "value": "10"},
+    )
+    assert gemini.normalize_tool_call("open_terminal", {"query": "the terminal"}, current_view={"screen": "home"}) == (
+        "navigate",
+        {"name": "navigate", "command": "open", "value": "terminals"},
+    )
+    assert gemini.normalize_tool_call(
+        "navigate_glass",
+        {"command": "open", "value": "Glassface"},
+        current_view={"screen": "home", "destinations": [{"id": "home", "label": "Home", "parent": ""}]},
+    ) == ("find", {"name": "find", "query": "Glassface"})
+    assert gemini.normalize_tool_call("start_terminal", {"folder": "glassface repo"}) == (
+        "start",
+        {"name": "start", "folder": "glassface", "harness": "claude"},
+    )
 
     std = gemini.setup_message("gemini-3.8-live", True, thinking_level="medium")["setup"]
     assert std["model"] == "models/gemini-3.8-live"
@@ -468,6 +494,16 @@ def test_mic_timeline_resets_across_turns_and_downlink_handles_long_gemini_burst
         tl.observe_frame(voiced, speaker_busy=False)
     sq, eq = tl.add_transcription("Run all integration tests now")
     assert sq >= 920 and eq > sq
+
+    # Delayed toolCall arriving AFTER intermediate filler + turnComplete still reuses real user span!
+    tl.mark_turn_complete()
+    for _ in range(8):
+        tl.observe_frame(voiced, speaker_busy=True)
+    # Stray room noise after filler must NOT erase last_verified_span (sq..eq)
+    tl.observe_frame(bytes([0xA0] * 320), speaker_busy=False)
+    tl.reset_turn()
+    delayed_claim = tl.current_claim_info()
+    assert delayed_claim == (sq, eq, "Run all integration tests now", True)
 
     async def check_burst():
         dl = gemini.GeminiDownlink()

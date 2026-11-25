@@ -157,7 +157,8 @@ def _validate_structured_tool(action: str, tool: dict, view: dict | None) -> boo
         cmd = tool.get("command")
         val = tool.get("value", "")
         if (
-            cmd not in {
+            cmd
+            not in {
                 "open",
                 "back",
                 "next",
@@ -166,6 +167,9 @@ def _validate_structured_tool(action: str, tool: dict, view: dict | None) -> boo
                 "enter_folder",
                 "set_volume",
                 "set_voice_model",
+                "set_earphone_amp",
+                "set_keep_awake",
+                "set_spoken_replies",
             }
             or cmd not in actions
             or not set(tool) <= {"name", "command", "value"}
@@ -244,6 +248,7 @@ def attest(identity, focus, action, text, view=None, *, resolved_tool=None, stru
         "operation": operation,
         "proof": proof,
         **({"command": assertion["tool"]["command"]} if action == "navigate" else {}),
+        **({"structured": True} if structured_tool is not None else {}),
     }
 
 

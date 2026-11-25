@@ -1,4 +1,4 @@
-"""Tests for the minimal Layer-1 direct Glass voice WebSocket (/api/glassface/voice)."""
+"""Tests for the direct Glass voice WebSocket (/api/glassface/voice, Layers 1 & 2)."""
 
 import asyncio
 import base64
@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 from jarvis import glassface_live as live
 from jarvis import glassface_voice as gv
+from jarvis.glassface_gemini_stream import _mulaw_decode, _mulaw_encode
 
 
 class FakeGlassPeer:
@@ -45,6 +46,46 @@ class FakeProviderWS:
 
             raise ConnectionClosedOK(Close(1000, "done"), Close(1000, "done"))
         return json.dumps(ev)
+
+
+def test_gpt_gain_lut_lifts_quiet_speech_without_hard_clipping():
+    # Silence stays pure digital silence
+    assert gv.GPT_GAIN_LUT[0xFF] == 0xFF
+    assert gv.GPT_GAIN_LUT[0x7F] == 0xFF
+    # Quiet speech (~2000 linear) gets lifted ~1.85x (~+5.4 dB)
+    quiet_code = _mulaw_encode(2000)
+    lifted = _mulaw_decode(gv.GPT_GAIN_LUT[quiet_code])
+    assert 3400 <= lifted <= 4000
+    # Negative speech preserves sign symmetrically
+    neg_code = _mulaw_encode(-2000)
+    assert _mulaw_decode(gv.GPT_GAIN_LUT[neg_code]) == -lifted
+    # Loud peak stays smoothly below full scale (zero flat-top clipping)
+    peak_code = _mulaw_encode(28000)
+    peak_lifted = _mulaw_decode(gv.GPT_GAIN_LUT[peak_code])
+    assert 28000 <= peak_lifted <= 32635
+
+
+def test_parse_local_tool_fast_matches_settings_navigation_and_screen():
+    assert gv.parse_local_tool_fast("Hey Dani, set volume to 9") == (
+        "adjust_setting",
+        {"setting": "volume", "value": "9"},
+    )
+    assert gv.parse_local_tool_fast("turn it up") == ("adjust_setting", {"setting": "volume", "value": "up"})
+    assert gv.parse_local_tool_fast("switch to gpt-live") == (
+        "adjust_setting",
+        {"setting": "voice_model", "value": "gpt-live"},
+    )
+    assert gv.parse_local_tool_fast("keep screen on") == (
+        "adjust_setting",
+        {"setting": "keep_awake", "value": "on"},
+    )
+    assert gv.parse_local_tool_fast("open terminals") == (
+        "navigate_glass",
+        {"command": "open", "value": "terminals"},
+    )
+    assert gv.parse_local_tool_fast("go home") == ("navigate_glass", {"command": "open", "value": "home"})
+    assert gv.parse_local_tool_fast("what screen am I on?") == ("get_screen", {})
+    assert gv.parse_local_tool_fast("tell me a joke about penguins") is None
 
 
 def test_bridge_gemini_multi_turn_and_interrupt_without_client_content():
@@ -95,14 +136,12 @@ def test_bridge_gemini_multi_turn_and_interrupt_without_client_content():
             )
         )
 
-        # Wait for ready
         for _ in range(50):
             if any(m.get("type") == "ready" for m in peer.sent_json):
                 break
             await asyncio.sleep(0.01)
         assert any(m.get("type") == "ready" for m in peer.sent_json)
 
-        # Stream two turns of audio + an explicit tap-to-interrupt + stop
         await peer.incoming.put({"type": "websocket.receive", "bytes": b"\x20" * 320})
         await asyncio.sleep(0.12)
         await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "interrupt"})})
@@ -112,11 +151,9 @@ def test_bridge_gemini_multi_turn_and_interrupt_without_client_content():
         await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
         await task
 
-        # Verify ZERO clientContent messages were ever sent mid-call (only setup + realtimeInput)
         assert provider.sent[0].get("setup", {}).get("tools") is None
         assert all("clientContent" not in msg for msg in provider.sent)
         assert sum(1 for msg in provider.sent if "realtimeInput" in msg) == 2
-        # Captions from both turns and clear from interrupt reached Glass
         captions = [(m["role"], m["text"]) for m in peer.sent_json if m.get("type") == "caption"]
         assert ("user", "Hey Dani.") in captions
         assert ("assistant", "Hey Davin!") in captions
@@ -127,14 +164,106 @@ def test_bridge_gemini_multi_turn_and_interrupt_without_client_content():
     asyncio.run(run())
 
 
-def test_bridge_gpt_multi_turn_and_interrupt():
+def test_bridge_gemini_layer2_local_tools_dispatches_to_glass_without_client_content():
     async def run():
-        pcmu_audio = base64.b64encode(b"\x10" * 320).decode("ascii")
+        provider = FakeProviderWS(
+            [
+                {"setupComplete": {}},
+                {
+                    "toolCall": {
+                        "functionCalls": [
+                            {"id": "fc-1", "name": "adjust_setting", "args": {"setting": "volume", "value": "9"}}
+                        ]
+                    }
+                },
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gemini(
+                peer,
+                "gemini-3.8-live-extended-thinking",
+                "test-key",
+                usage,
+                recheck,
+                300,
+                thinking="low",
+                tools=["local"],
+                screen={"screen": "home", "volume": "7/10"},
+                connector=fake_connect,
+            )
+        )
+
+        # Wait for tool dispatch to Glass
+        tool_msg = None
+        for _ in range(80):
+            tool_msg = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+            if tool_msg:
+                break
+            await asyncio.sleep(0.01)
+        assert tool_msg == {
+            "type": "tool",
+            "id": "fc-1",
+            "name": "adjust_setting",
+            "args": {"setting": "volume", "value": "9"},
+        }
+
+        # Glass replies immediately with tool_result + fresh screen
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "tool_result",
+                        "id": "fc-1",
+                        "ok": True,
+                        "result": "Volume set to 9/10.",
+                        "screen": {"screen": "home", "volume": "9/10"},
+                    }
+                ),
+            }
+        )
+        for _ in range(80):
+            if any("toolResponse" in msg for msg in provider.sent):
+                break
+            await asyncio.sleep(0.01)
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        # Setup included local tool declarations + initial screen, and ZERO clientContent frames were sent
+        setup = provider.sent[0]["setup"]
+        decl_names = [d["name"] for d in setup["tools"][0]["functionDeclarations"]]
+        assert decl_names == ["adjust_setting", "navigate_glass", "get_screen"]
+        assert '"volume": "7/10"' in setup["systemInstruction"]["parts"][0]["text"]
+        assert all("clientContent" not in msg for msg in provider.sent)
+        resp = next(msg["toolResponse"]["functionResponses"][0] for msg in provider.sent if "toolResponse" in msg)
+        assert resp["id"] == "fc-1"
+        assert resp["response"]["ok"] is True
+        assert resp["response"]["result"] == "Volume set to 9/10."
+        assert resp["response"]["screen"]["volume"] == "9/10"
+
+    asyncio.run(run())
+
+
+def test_bridge_gpt_multi_turn_and_layer2_local_delegation():
+    async def run():
+        pcmu_audio = base64.b64encode(bytes([_mulaw_encode(2000)]) * 320).decode("ascii")
         provider = FakeProviderWS(
             [
                 {"type": "session.started"},
-                {"type": "session.input_transcript.delta", "delta": "Hello Marin."},
-                {"type": "session.output_transcript.delta", "delta": "Hi Davin!"},
+                {"type": "session.input_transcript.delta", "delta": "Open terminals"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-1", "target": "client"}},
+                {"type": "session.output_transcript.delta", "delta": "Opened Terminals."},
                 {"type": "session.output_audio.delta", "delta": pcmu_audio},
             ]
         )
@@ -157,33 +286,59 @@ def test_bridge_gpt_multi_turn_and_interrupt():
                 usage,
                 recheck,
                 300,
+                identity="glass-1",
+                tools=["local"],
+                screen={"screen": "home"},
                 connector=fake_connect,
             )
         )
 
-        for _ in range(50):
-            if any(m.get("type") == "ready" for m in peer.sent_json):
+        # Wait for Glass tool message triggered by GPT-Live delegation
+        tool_msg = None
+        for _ in range(100):
+            tool_msg = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+            if tool_msg:
                 break
             await asyncio.sleep(0.01)
-        assert any(m.get("type") == "ready" for m in peer.sent_json)
+        assert tool_msg is not None
+        assert tool_msg["name"] == "navigate_glass"
+        assert tool_msg["args"] == {"command": "open", "value": "terminals"}
 
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "tool_result",
+                        "id": tool_msg["id"],
+                        "ok": True,
+                        "result": "Opened Terminals.",
+                        "screen": {"screen": "roster", "title": "Terminals"},
+                    }
+                ),
+            }
+        )
         await peer.incoming.put({"type": "websocket.receive", "bytes": b"\x20" * 320})
+        for _ in range(100):
+            if any(m.get("type") == "session.commentary.append" for m in provider.sent):
+                break
+            await asyncio.sleep(0.01)
         await asyncio.sleep(0.14)
         await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "interrupt"})})
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.04)
         await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
         await task
 
-        # Clean session.start uses OpenAI v1/live/sessions event names (NO delegation field)
         assert provider.sent[0]["type"] == "session.start"
-        assert "delegation" not in provider.sent[0]["session"]
+        assert provider.sent[0]["session"]["delegation"] == {"type": "client"}
         assert any(m.get("type") == "session.input_audio.append" for m in provider.sent)
-        assert not any(m.get("type") == "response.cancel" for m in provider.sent)
-        captions = [(m["role"], m["text"]) for m in peer.sent_json if m.get("type") == "caption"]
-        assert ("user", "Hello Marin.") in captions
-        assert ("assistant", "Hi Davin!") in captions
+        commentary = next(m for m in provider.sent if m.get("type") == "session.commentary.append")
+        assert commentary["delegation_id"] == "del-1"
+        assert "Opened Terminals." in commentary["text"]
         assert any(m.get("type") == "clear" for m in peer.sent_json)
         assert len(peer.sent_bytes) > 0
+        # Verify GPT_GAIN_LUT boosted downlink audio above original 2000 linear amplitude
+        assert _mulaw_decode(peer.sent_bytes[0][0]) > 3400
 
     asyncio.run(run())
 
@@ -214,6 +369,8 @@ def test_voice_socket_preempts_stale_session_for_same_identity(monkeypatch):
                         "token": "eri_bot_" + "x" * 24,
                         "model": "gemini-3.8-live-extended-thinking",
                         "thinking": "low",
+                        "tools": ["local"],
+                        "screen": {"screen": "home"},
                     }
                 )
 
@@ -232,8 +389,8 @@ def test_voice_socket_preempts_stale_session_for_same_identity(monkeypatch):
 
             yield recheck
 
-        async def fake_bridge(ws, model, *_args, **_kw):
-            bridged.append((ws, model))
+        async def fake_bridge(ws, model, *_args, **kw):
+            bridged.append((ws, model, kw.get("tools"), kw.get("screen")))
 
         class DummySettings:
             gemini_api_key = "k"
@@ -255,6 +412,8 @@ def test_voice_socket_preempts_stale_session_for_same_identity(monkeypatch):
 
         assert closed_stale == [1000]
         assert len(bridged) == 1
+        assert bridged[0][2] == ["local"]
+        assert bridged[0][3] == {"screen": "home"}
         assert ws.sent_json == []
 
     asyncio.run(run())

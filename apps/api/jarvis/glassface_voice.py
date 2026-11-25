@@ -41,6 +41,7 @@ router = APIRouter()
 VOICE_SECONDS = 1800  # 30-minute session lease; Glass can reconnect seamlessly afterward.
 HANDSHAKE_LIMIT = 32
 handshakes: set[object] = set()
+active_peers: dict[str, WebSocket] = {}
 
 VOICE_INSTRUCTIONS = (
     "You are Dani, Davin's warm, helpful voice assistant on Google Glass. "
@@ -213,6 +214,7 @@ async def bridge_gemini(
                 try:
                     raw_event = await ws.recv()
                 except ConnectionClosedOK:
+                    log.info("Glass voice upstream closed cleanly (%s)", model)
                     provider_ended = True
                     await downlink.frames.join()
                     drained = True
@@ -401,6 +403,7 @@ async def bridge_gpt(
                 try:
                     raw_event = await ws.recv()
                 except ConnectionClosedOK:
+                    log.info("Glass voice upstream closed cleanly (%s)", model)
                     provider_ended = True
                     await downlink.frames.join()
                     drained = True
@@ -528,6 +531,15 @@ async def voice_socket(websocket: WebSocket) -> None:
         provider: Literal["gemini", "openai"] = "gemini" if start.model.startswith("gemini-") else "openai"
         settings = await run_in_threadpool(authorized_settings, identity, provider)
 
+        stale = active_peers.get(identity)
+        if stale is not None:
+            log.info("Glass voice preempting stale session for %s", identity)
+            with suppress(Exception):
+                await stale.close(code=1000)
+            deadline = asyncio.get_running_loop().time() + 2.5
+            while identity in active and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.05)
+
         if identity in active or len(active) >= 4:
             with suppress(Exception):
                 await websocket.send_json({"type": "error", "message": "Dani already has an active Glass call."})
@@ -535,6 +547,7 @@ async def voice_socket(websocket: WebSocket) -> None:
             return
 
         active.add(identity)
+        active_peers[identity] = websocket
         handshakes.discard(marker)
         usage = live.Usage()
         try:
@@ -559,6 +572,8 @@ async def voice_socket(websocket: WebSocket) -> None:
                         VOICE_SECONDS,
                     )
         finally:
+            if active_peers.get(identity) is websocket:
+                active_peers.pop(identity, None)
             active.discard(identity)
     except DomainError as exc:
         with suppress(Exception):

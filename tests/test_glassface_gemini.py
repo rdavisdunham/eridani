@@ -1,5 +1,6 @@
 """Gemini 3.8 Live & Extended Thinking bridge, resamplers, structured tools, and completion notices."""
 
+import asyncio
 import base64
 import cmath
 import json
@@ -512,5 +513,145 @@ def test_mic_timeline_resets_across_turns_and_downlink_handles_long_gemini_burst
         assert dl.queued == 25 * gemini.RATE
         dl.discard()
 
-    import asyncio
     asyncio.run(check_burst())
+
+
+def test_unified_gpt_live_mirrors_gemini_tools_direct_sends_and_completions(client, monkeypatch):
+    from contextlib import asynccontextmanager
+    from jarvis import glassface_media_stream as gpt_stream
+    from jarvis import glassface_tools, memory_learning
+
+    # Fast deterministic matcher handles settings, singular/plural screens, and explicit sends in 0 ms
+    unified_home = {
+        **HOME_VIEW,
+        "actions": ["open", "set_volume", "set_voice_model", "set_earphone_amp", "set_keep_awake", "set_spoken_replies"],
+    }
+    assert glassface_tools.parse_unified_fast("Can you turn the volume up to medium?", unified_home) == (
+        "navigate",
+        {"name": "navigate", "command": "set_volume", "value": "medium"},
+    )
+    assert glassface_tools.parse_unified_fast("Set earphone amp to 12", unified_home) == (
+        "navigate",
+        {"name": "navigate", "command": "set_earphone_amp", "value": "12"},
+    )
+    assert glassface_tools.parse_unified_fast("Can you open the terminal?", unified_home) == (
+        "navigate",
+        {"name": "navigate", "command": "open", "value": "terminals"},
+    )
+
+    _, headers = key(client, [routes.SCOPE])
+    unified_term = {
+        **TERMINAL_VIEW,
+        "actions": ["open", "back", "set_volume", "set_voice_model", "set_earphone_amp", "set_keep_awake", "set_spoken_replies"],
+    }
+    commentaries = []
+    commentary_event = threading.Event()
+
+    def infer(owner, path, body, *args, **kwargs):
+        payload = json.loads(body["input"])
+        assert payload["screen"] == "terminal"
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "tool": "send_terminal_message",
+                                "setting": "",
+                                "command": "",
+                                "value": "",
+                                "query": "",
+                                "detail": "",
+                                "folder": "",
+                                "harness": "",
+                                "model": "",
+                                "effort": "",
+                                "message": "Run pytest on auth",
+                                "target": "",
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    class FakeGptLive:
+        def __init__(self):
+            self.events = asyncio.Queue()
+            self.mic_count = 0
+
+        async def send(self, raw):
+            msg = json.loads(raw)
+            kind = msg["type"]
+            if kind == "session.start":
+                assert msg["session"]["audio"]["output"]["voice"] == "marin"
+                self.events.put_nowait({"type": "session.started"})
+            elif kind == "session.input_audio.append":
+                self.mic_count += 1
+                if self.mic_count == 2:
+                    self.events.put_nowait(
+                        {
+                            "type": "session.input_transcript.delta",
+                            "event_id": "u-1",
+                            "delta": "Run pytest on auth",
+                        }
+                    )
+                    self.events.put_nowait({"type": "input_audio_buffer.speech_stopped"})
+            elif kind == "session.commentary.append":
+                commentaries.append(msg["content"])
+                self.events.put_nowait({"type": "session.commentary.appended", "client_event_id": msg["event_id"]})
+                if len(commentaries) >= 2:
+                    commentary_event.set()
+            elif kind == "session.close":
+                self.events.put_nowait({"type": "session.closed", "usage": {"seconds": 15}})
+
+        async def recv(self):
+            return json.dumps(await self.events.get())
+
+    @asynccontextmanager
+    async def fake_connect(*args, **kwargs):
+        yield FakeGptLive()
+
+    monkeypatch.setattr(gpt_stream, "connect", fake_connect)
+    monkeypatch.setattr(memory_learning, "provider_request", infer)
+
+    ticket = client.post(
+        ROOT + "/tickets",
+        headers=headers,
+        json={
+            "terminal": TURN["terminal"],
+            "focus": "gpt-live-focus-1",
+            "view": unified_term,
+            "voice": {"model": "gpt-live-1"},
+        },
+    ).json()["ticket"]
+
+    with client.websocket_connect(ROOT) as ws_client:
+        ws_client.send_json({"type": "start", "ticket": ticket})
+        ready_msg = ws_client.receive_json()
+        assert ready_msg == {"type": "ready", "screenContext": True, "completions": True}
+
+        for _ in range(3):
+            ws_client.send_bytes(bytes([0xA0] * 320))
+
+        cap = ws_client.receive_json()
+        assert cap["type"] == "caption" and cap["role"] == "user"
+        assert 0 <= cap["start_ms"] < cap["end_ms"] <= 120
+
+        utt = ws_client.receive_json()
+        assert utt["type"] == "utterance" and utt["action"] == "send" and utt["structured"] is True
+        verified = client.post(ROOT + "/verify", headers=headers, json={"proof": utt["proof"]}).json()
+        assert verified["tool"] == {"name": "send", "message": "Run pytest on auth"}
+
+        ws_client.send_json({"type": "receipt", "operation": utt["operation"], "text": "Queued in Jarvis."})
+        ws_client.send_json({"type": "completion", "label": "Worker suite", "summary": "Auth tests green."})
+        for _ in range(40):
+            ws_client.send_bytes(bytes([0xFF] * 320))
+            if commentary_event.wait(0.035):
+                break
+        assert commentary_event.is_set()
+        ws_client.send_json({"type": "stop"})
+        assert ws_client.receive_json()["reason"] == "ended"
+
+    assert any("Queued in Jarvis." in c for c in commentaries)
+    assert any("Worker suite" in c and "Auth tests green." in c for c in commentaries)

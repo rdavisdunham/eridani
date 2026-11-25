@@ -488,6 +488,23 @@ def session_start(model, terminal, view=None):
 async def bridge(
     peer, model, key, terminal, usage, recheck, proof, seconds, *, view=None, resolve_intent=None, trace=None, worker_identity=None
 ):
+    if isinstance(view, dict) and "set_earphone_amp" in (view.get("actions") or ()):
+        from . import glassface_unified_gpt_stream
+
+        return await glassface_unified_gpt_stream.bridge(
+            peer,
+            model,
+            key,
+            terminal,
+            usage,
+            recheck,
+            proof,
+            seconds,
+            view=view,
+            resolve_intent=resolve_intent,
+            trace=trace,
+            connector=connect,
+        )
     async with AsyncExitStack() as resources:
         first = asyncio.create_task(peer.receive())
 

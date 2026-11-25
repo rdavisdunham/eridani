@@ -80,9 +80,24 @@ class View(BaseModel):
     page: str | None = Field(default=None, min_length=1, max_length=64)
     selection: str | None = Field(default=None, max_length=160)
     actions: (
-        list[Literal["open", "back", "next", "previous", "select", "enter_folder", "set_volume", "set_voice_model", "start"]]
+        list[
+            Literal[
+                "open",
+                "back",
+                "next",
+                "previous",
+                "select",
+                "enter_folder",
+                "set_volume",
+                "set_voice_model",
+                "set_earphone_amp",
+                "set_keep_awake",
+                "set_spoken_replies",
+                "start",
+            ]
+        ]
         | None
-    ) = Field(default=None, max_length=16)
+    ) = Field(default=None, max_length=20)
 
     choices: list[Annotated[str, Field(max_length=44)]] | None = Field(default=None, max_length=9)
 

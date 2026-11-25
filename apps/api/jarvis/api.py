@@ -118,6 +118,8 @@ from .glassface_messages import router as glassface_messages_router
 app.include_router(glassface_messages_router)
 from .glassface_media import router as glassface_media_router
 app.include_router(glassface_media_router)
+from .glassface_voice import router as glassface_voice_router
+app.include_router(glassface_voice_router)
 from .agent_link import router as agent_link_router
 
 app.include_router(agent_link_router)

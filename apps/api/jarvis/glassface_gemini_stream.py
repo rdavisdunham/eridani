@@ -14,6 +14,7 @@ from typing import Literal
 
 from starlette.websockets import WebSocketDisconnect
 from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosedOK
 
 from . import glassface_live as live
 from .glassface_media_stream import (
@@ -40,6 +41,32 @@ UPLINK_RATE = 16000
 DOWNLINK_RATE = 24000
 VOICE_NAME = "Aoede"
 TOOL_TRANSCRIPT_WAIT_SECONDS = 0.45
+MAX_GEMINI_DOWNLINK_SECONDS = 60
+
+
+class GeminiDownlink(HeadsetPlayback):
+    """Paced downlink queue sized for Gemini Live's faster-than-realtime audio generation."""
+
+    def __init__(self):
+        super().__init__()
+        self.frames = asyncio.Queue(maxsize=2048)
+
+    def add(self, raw: bytes):
+        if 1 not in raw.translate(VOICE_ACTIVITY) and not self.speaking():
+            return
+        if self.queued + len(raw) > MAX_GEMINI_DOWNLINK_SECONDS * RATE:
+            raise live.LiveFailure("Headset playback is too far behind")
+        for offset in range(0, len(raw), MAX_FRAME):
+            frame = raw[offset : offset + MAX_FRAME]
+            try:
+                voice_samples = len(frame.translate(VOICE_ACTIVITY).rstrip(b"\0"))
+                self.frames.put_nowait((self.generation, frame, voice_samples))
+            except asyncio.QueueFull:
+                raise live.LiveFailure("Too many queued audio frames") from None
+            self.queued += len(frame)
+            if voice_samples:
+                self.queued_voice += 1
+                self.audible = True
 
 
 def _mulaw_encode(sample: int) -> int:
@@ -317,6 +344,17 @@ def setup_message(
         "model": wire_model,
         "generationConfig": gen_config,
         "systemInstruction": {"parts": [{"text": system_instructions(controls_enabled)}]},
+        "realtimeInputConfig": {
+            "automaticActivityDetection": {
+                "disabled": False,
+                "startOfSpeechSensitivity": "START_SENSITIVITY_LOW",
+                "endOfSpeechSensitivity": "END_SENSITIVITY_LOW",
+                "prefixPaddingMs": 200,
+                "silenceDurationMs": 550,
+            },
+            "activityHandling": "START_OF_ACTIVITY_INTERRUPTS",
+        },
+        "contextWindowCompression": {"slidingWindow": {}},
         "inputAudioTranscription": {},
         "outputAudioTranscription": {},
     }
@@ -422,6 +460,9 @@ class MicTimeline:
         self.turn_end_ms: int = 0
         self.transcript: str = ""
         self.emitted_spans: deque[tuple[int, int]] = deque(maxlen=128)
+        self.turn_completed: bool = False
+        self.turn_floor_ms: int = 0
+        self.last_verified_span: tuple[int, int, str, int] | None = None
 
     @property
     def mic_ms(self) -> int:
@@ -431,8 +472,15 @@ class MicTimeline:
         start_ms = self.mic_ms
         self.mic_bytes += len(raw)
         end_ms = self.mic_ms
+        if speaker_busy:
+            self.turn_floor_ms = end_ms
+            return False
         voiced = raw.translate(ACTIVE_SAMPLES).count(1) > len(raw) // 14
-        if voiced and not speaker_busy:
+        if voiced:
+            if self.turn_completed or (
+                self.turn_start_ms is not None and start_ms - self.last_voiced_ms > 1800 and not self.emitted_spans
+            ):
+                self.reset_turn()
             if self.active_start_ms is None or start_ms - self.last_voiced_ms > 1800:
                 self.active_start_ms = start_ms
             self.active_end_ms = end_ms
@@ -443,14 +491,19 @@ class MicTimeline:
         return voiced
 
     def add_transcription(self, text: str) -> tuple[int, int]:
+        if self.turn_completed:
+            self.reset_turn()
         now_ms = max(40, self.mic_ms)
         if self.turn_start_ms is not None and now_ms - self.turn_end_ms <= 4000:
-            start_ms = self.turn_start_ms
+            start_ms = max(self.turn_floor_ms, self.turn_start_ms)
             end_ms = max(start_ms + 40, min(now_ms, max(self.turn_end_ms, start_ms + 40)))
+            if end_ms > now_ms:
+                end_ms = now_ms
+                start_ms = max(0, end_ms - 40)
         else:
             end_ms = now_ms
             est = min(3000, max(120, len(text) * 45))
-            start_ms = max(0, end_ms - est)
+            start_ms = max(self.turn_floor_ms, end_ms - est)
             if start_ms >= end_ms:
                 start_ms = max(0, end_ms - 40)
             self.turn_start_ms = start_ms
@@ -470,13 +523,32 @@ class MicTimeline:
             end_ms = max(start_ms + 40, min(self.mic_ms, max(self.turn_end_ms, start_ms + 40)))
             if 0 <= start_ms < end_ms <= self.mic_ms:
                 return start_ms, end_ms, self.transcript.strip()
+        if self.last_verified_span is not None:
+            s_ms, e_ms, txt, at_ms = self.last_verified_span
+            if self.mic_ms - at_ms <= 2000 and 0 <= s_ms < e_ms <= self.mic_ms:
+                return s_ms, e_ms, txt
         return None
+
+    def consume_turn(self, start_ms: int, end_ms: int, words: str):
+        self.last_verified_span = (start_ms, end_ms, words, self.mic_ms)
+        self.turn_start_ms = None
+        self.turn_end_ms = 0
+        self.transcript = ""
+        self.emitted_spans.clear()
+        self.turn_completed = False
+
+    def mark_turn_complete(self):
+        self.turn_completed = True
+        self.turn_floor_ms = max(self.turn_floor_ms, self.mic_ms)
+        self.last_verified_span = None
 
     def reset_turn(self):
         self.turn_start_ms = None
         self.turn_end_ms = 0
         self.transcript = ""
         self.emitted_spans.clear()
+        self.turn_completed = False
+        self.last_verified_span = None
 
 
 async def bridge(
@@ -513,7 +585,7 @@ async def bridge(
                 open_timeout=8,
                 close_timeout=2,
                 max_size=2_000_000,
-                max_queue=16,
+                max_queue=256,
             )
         )
 
@@ -531,11 +603,12 @@ async def bridge(
         uplink_dsp = UplinkResampler()
         downlink_dsp = DownlinkResampler()
         playback = Playback()
-        downlink = HeadsetPlayback()
+        downlink = GeminiDownlink()
         interruption = SpokenInterruption()
 
         interaction_status = "IDLE"
         issued_calls: dict[str, tuple[str, str]] = {}  # operation -> (call_id, call_name)
+        cancelled_call_ids: set[str] = set()
         deadlines: dict[str, float] = {}
         pending_notices: deque[str] = deque(maxlen=16)
         pending_calls_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=64)
@@ -544,6 +617,10 @@ async def bridge(
         async def send_ws(payload: dict):
             async with ws_write:
                 await ws.send(json.dumps(payload, ensure_ascii=False))
+
+        async def send_peer_json(payload: dict):
+            async with downlink.write:
+                await peer.send_json(payload)
 
         async def send_tool_result(call_id: str, call_name: str, result_text: str, operation: str | None = None):
             if trace:
@@ -570,6 +647,9 @@ async def bridge(
                 raw_args = call.get("args")
                 if not isinstance(call_id, str) or not call_id or not isinstance(call_name, str):
                     continue
+                if call_id in cancelled_call_ids:
+                    cancelled_call_ids.discard(call_id)
+                    continue
                 if not controls_enabled:
                     await send_tool_result(call_id, call_name, "Screen controls are unavailable in this session.")
                     continue
@@ -580,7 +660,7 @@ async def bridge(
                 action, structured = normalized
 
                 # If Gemini emitted toolCall slightly ahead of inputTranscription, wait briefly for the caption.
-                if not timeline.emitted_spans:
+                if not timeline.emitted_spans and timeline.last_verified_span is None:
                     transcript_arrived.clear()
                     with suppress(TimeoutError):
                         await asyncio.wait_for(transcript_arrived.wait(), TOOL_TRANSCRIPT_WAIT_SECONDS)
@@ -597,10 +677,10 @@ async def bridge(
 
                 # If no caption has been sent to Glass yet for this voiced span, send an attested user caption
                 # so Glass's EchoFence can correlate the exact [start_ms, end_ms] boundaries.
-                if not timeline.emitted_spans:
+                if not timeline.emitted_spans and timeline.last_verified_span is None:
                     fallback_text = words or f"[{call_name}]"
                     start_ms, end_ms = timeline.add_transcription(fallback_text)
-                    await peer.send_json(
+                    await send_peer_json(
                         {
                             "type": "caption",
                             "role": "user",
@@ -667,8 +747,8 @@ async def bridge(
                         end_ms=end_ms,
                     )
                 candidate.update(start_ms=start_ms, end_ms=end_ms)
-                timeline.reset_turn()
-                await peer.send_json(candidate)
+                timeline.consume_turn(start_ms, end_ms, words)
+                await send_peer_json(candidate)
 
         async def from_glass():
             nonlocal last_audio, last_conversation
@@ -749,6 +829,8 @@ async def bridge(
                             }
                         )
                         continue
+                    if kind in {"decision", "completion"} and not label:
+                        continue
                     if kind == "decision" and label:
                         summary = update.pop("summary", "")
                         if update or not isinstance(summary, str) or len(summary) > 1200:
@@ -801,15 +883,16 @@ async def bridge(
                 last_audio = now
                 if trace:
                     trace.audio("microphone", raw)
-                audio_cursor = max(now, audio_cursor) + len(raw) / RATE
-                if audio_cursor > now + 1.5:
+                audio_cursor = max(now - 4.5, audio_cursor) + len(raw) / RATE
+                if audio_cursor > now + 2.5:
                     raise live.LiveFailure("Glass audio exceeds realtime rate")
 
-                voiced = timeline.observe_frame(raw, downlink.speaking())
-                if voiced:
+                echo_active = downlink.speaking() or (downlink.voice_end > 0 and now < downlink.voice_end + 0.75)
+                voiced = timeline.observe_frame(raw, echo_active)
+                if voiced and not echo_active:
                     last_conversation = now
 
-                pcm16k = uplink_dsp.transcode(raw)
+                pcm16k = bytes(len(raw) * 4) if echo_active else uplink_dsp.transcode(raw)
                 await send_ws(
                     {
                         "realtimeInput": {
@@ -846,10 +929,20 @@ async def bridge(
         async def from_provider():
             nonlocal session_started_at, last_conversation, interaction_status, provider_ended, drained
             while True:
-                raw_event = await ws.recv()
+                try:
+                    raw_event = await ws.recv()
+                except ConnectionClosedOK:
+                    provider_ended = True
+                    await downlink.frames.join()
+                    drained = True
+                    return
                 event = json.loads(raw_event)
                 if not isinstance(event, dict):
                     raise live.LiveFailure("Unexpected Gemini Live message")
+                if "goAway" in event:
+                    if trace:
+                        trace.event("provider-event", provider_type="goAway")
+                    continue
 
                 if "setupComplete" in event and not ready.is_set():
                     session_started_at = clock()
@@ -858,7 +951,7 @@ async def bridge(
                     await recheck()
                     await send_ws(initial_context_message(terminal, view))
                     ready.set()
-                    await peer.send_json(
+                    await send_peer_json(
                         {
                             "type": "ready",
                             **({"screenContext": True, "completions": True} if view else {}),
@@ -872,6 +965,9 @@ async def bridge(
 
                 if "toolCallCancellation" in event:
                     cancelled = (event.get("toolCallCancellation") or {}).get("ids") or []
+                    for cid in cancelled:
+                        if isinstance(cid, str) and cid:
+                            cancelled_call_ids.add(cid)
                     if trace:
                         trace.event("provider-event", provider_type="toolCallCancellation", ids=cancelled)
                     # Accepted Glass/Remotea operations cannot be rolled back; drop only unredeemed tracking.
@@ -902,8 +998,12 @@ async def bridge(
                     interaction_status = status
                 elif content.get("turnComplete") is True and not issued_calls:
                     interaction_status = "IDLE"
+                if content.get("turnComplete") is True and pending_calls_queue.empty():
+                    timeline.mark_turn_complete()
 
                 if content.get("interrupted") is True:
+                    if pending_calls_queue.empty():
+                        timeline.mark_turn_complete()
                     if downlink.audible:
                         if trace:
                             trace.event("playback-clear", source="provider", queued_bytes=downlink.queued)
@@ -914,6 +1014,17 @@ async def bridge(
                 in_tr = content.get("inputTranscription") or content.get("input_transcription")
                 if isinstance(in_tr, dict) and isinstance(in_tr.get("text"), str) and in_tr["text"]:
                     delta = in_tr["text"][:4096]
+                    echo_window = downlink.speaking() or (downlink.voice_end > 0 and clock() < downlink.voice_end + 0.8)
+                    if echo_window and timeline.turn_start_ms is None:
+                        if trace:
+                            trace.event("echo-suppressed", delta=delta)
+                        continue
+                    norm_delta = " ".join(re.findall(r"\b[^\W\d_]+\b", delta.casefold()))
+                    norm_said = " ".join(re.findall(r"\b[^\W\d_]+\b", playback.caption[-1000:].casefold()))
+                    if echo_window and len(norm_delta) >= 3 and f" {norm_delta} " in f" {norm_said} ":
+                        if trace:
+                            trace.event("echo-suppressed", delta=delta)
+                        continue
                     if delta.strip():
                         last_conversation = clock()
                     start_ms, end_ms = timeline.add_transcription(delta)
@@ -934,7 +1045,7 @@ async def bridge(
                         if trace:
                             trace.event("playback-clear", source="wearer-caption", queued_bytes=downlink.queued)
                         await downlink.clear(peer)
-                    await peer.send_json(
+                    await send_peer_json(
                         {
                             "type": "caption",
                             "role": "user",
@@ -950,7 +1061,7 @@ async def bridge(
                     playback.caption = (playback.caption + delta)[-8000:]
                     if trace:
                         trace.event("provider-event", provider_type="outputTranscription", fields={"delta": delta})
-                    await peer.send_json({"type": "caption", "role": "assistant", "text": delta})
+                    await send_peer_json({"type": "caption", "role": "assistant", "text": delta})
 
                 model_turn = content.get("modelTurn") or content.get("model_turn")
                 if isinstance(model_turn, dict):

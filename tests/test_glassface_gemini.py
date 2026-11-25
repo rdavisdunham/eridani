@@ -435,3 +435,46 @@ def test_direct_in_terminal_send_and_completion_notice_delivery(client, monkeypa
             ws_client.send_json({"type": "stop"})
 
     assert any("Worker suite" in n and "All 12 tests passed." in n for n in received_notices)
+
+
+def test_mic_timeline_resets_across_turns_and_downlink_handles_long_gemini_burst():
+    tl = gemini.MicTimeline()
+    voiced = bytes([0xCE] * 320)
+    silence = bytes([0xFF] * 320)
+    # Turn 1 user speech: 0..160 ms
+    for _ in range(4):
+        tl.observe_frame(voiced, speaker_busy=False)
+    tl.add_transcription("Hey Dani")
+    # Dani replies for 10 frames (160..560 ms), then turnComplete fires
+    for _ in range(10):
+        tl.observe_frame(voiced, speaker_busy=True)
+    tl.mark_turn_complete()
+    for _ in range(5):
+        tl.observe_frame(silence, speaker_busy=False)
+    # Turn 2 speech at 760 ms (test loud 0xA0 and quiet 0xCE frames):
+    for _ in range(4):
+        tl.observe_frame(bytes([0xA0] * 320), speaker_busy=False)
+    s2, e2 = tl.add_transcription("Open terminals")
+    assert s2 >= 760 and e2 > s2
+    claim = tl.current_claim_span()
+    assert claim == (s2, e2, "Open terminals")
+    # Multi-tool batch in same turn reuses verified span cleanly
+    tl.consume_turn(s2, e2, "Open terminals")
+    assert tl.current_claim_span() == (s2, e2, "Open terminals")
+
+    # Quiet speech below ACTIVE_SAMPLES still respects turn_floor_ms:
+    tl.mark_turn_complete()
+    for _ in range(6):
+        tl.observe_frame(voiced, speaker_busy=False)
+    sq, eq = tl.add_transcription("Run all integration tests now")
+    assert sq >= 920 and eq > sq
+
+    async def check_burst():
+        dl = gemini.GeminiDownlink()
+        # 25 seconds of faster-than-realtime audio must buffer without LiveFailure
+        dl.add(bytes([0xCE] * (25 * gemini.RATE)))
+        assert dl.queued == 25 * gemini.RATE
+        dl.discard()
+
+    import asyncio
+    asyncio.run(check_burst())

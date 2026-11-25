@@ -106,7 +106,7 @@ def route_owner(path, source):
         return "operations"
     if "/accounts" in path:
         return "workspaces"
-    if "/voice/" in path or path.startswith("/api/glassface/dani/"):
+    if "/voice/" in path or path.startswith(("/api/glassface/dani/", "/api/glassface/voice")):
         return "live_voice"
     if "/note-lists" in path:
         return "note_lists"

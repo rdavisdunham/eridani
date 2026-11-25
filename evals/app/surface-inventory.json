@@ -792,6 +792,13 @@
       "feature": "agent_control"
     },
     {
+      "method": "WEBSOCKET",
+      "path": "/api/glassface/voice",
+      "handler": "voice_socket",
+      "source": "apps/api/jarvis/glassface_voice.py",
+      "feature": "live_voice"
+    },
+    {
       "method": "GET",
       "path": "/api/v1/accounts",
       "handler": "overview",

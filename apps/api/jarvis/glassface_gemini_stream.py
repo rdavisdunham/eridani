@@ -461,6 +461,7 @@ class MicTimeline:
         self.transcript: str = ""
         self.emitted_spans: deque[tuple[int, int]] = deque(maxlen=128)
         self.turn_completed: bool = False
+        self.turn_floor_ms: int = 0
         self.last_verified_span: tuple[int, int, str, int] | None = None
 
     @property
@@ -471,8 +472,11 @@ class MicTimeline:
         start_ms = self.mic_ms
         self.mic_bytes += len(raw)
         end_ms = self.mic_ms
+        if speaker_busy:
+            self.turn_floor_ms = end_ms
+            return False
         voiced = raw.translate(ACTIVE_SAMPLES).count(1) > len(raw) // 14
-        if voiced and not speaker_busy:
+        if voiced:
             if self.turn_completed or (
                 self.turn_start_ms is not None and start_ms - self.last_voiced_ms > 1800 and not self.emitted_spans
             ):
@@ -491,12 +495,15 @@ class MicTimeline:
             self.reset_turn()
         now_ms = max(40, self.mic_ms)
         if self.turn_start_ms is not None and now_ms - self.turn_end_ms <= 4000:
-            start_ms = self.turn_start_ms
+            start_ms = max(self.turn_floor_ms, self.turn_start_ms)
             end_ms = max(start_ms + 40, min(now_ms, max(self.turn_end_ms, start_ms + 40)))
+            if end_ms > now_ms:
+                end_ms = now_ms
+                start_ms = max(0, end_ms - 40)
         else:
             end_ms = now_ms
             est = min(3000, max(120, len(text) * 45))
-            start_ms = max(0, end_ms - est)
+            start_ms = max(self.turn_floor_ms, end_ms - est)
             if start_ms >= end_ms:
                 start_ms = max(0, end_ms - 40)
             self.turn_start_ms = start_ms
@@ -532,6 +539,7 @@ class MicTimeline:
 
     def mark_turn_complete(self):
         self.turn_completed = True
+        self.turn_floor_ms = max(self.turn_floor_ms, self.mic_ms)
         self.last_verified_span = None
 
     def reset_turn(self):

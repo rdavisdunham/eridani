@@ -88,6 +88,20 @@ def test_parse_local_tool_fast_matches_settings_navigation_and_screen():
     assert gv.parse_local_tool_fast("tell me a joke about penguins") is None
 
 
+def test_parse_glass_tool_fast_matches_layer3_remotea_commands():
+    assert gv.parse_glass_tool_fast("what terminals are open?") == ("list_terminals", {"detail": "brief"})
+    assert gv.parse_glass_tool_fast("Hey Dani, what did it last say?") == ("read_terminal", {"query": ""})
+    assert gv.parse_glass_tool_fast("tell glassface to run the tests") == (
+        "send_terminal_message",
+        {"message": "run the tests", "target": "glassface"},
+    )
+    assert gv.parse_glass_tool_fast("start a new claude terminal in glassface") == (
+        "start_terminal",
+        {"folder": "glassface", "harness": "claude"},
+    )
+    assert gv.parse_glass_tool_fast("what terminals are open?", remotea_tools=False) is None
+
+
 def test_bridge_gemini_multi_turn_and_interrupt_without_client_content():
     async def run():
         pcm24k = b"\x00\x04\x00\x04\x00\x04" * 400
@@ -415,5 +429,161 @@ def test_voice_socket_preempts_stale_session_for_same_identity(monkeypatch):
         assert bridged[0][2] == ["local"]
         assert bridged[0][3] == {"screen": "home"}
         assert ws.sent_json == []
+
+    asyncio.run(run())
+
+
+def test_bridge_gemini_layer3_remotea_tools_dispatches_without_client_content():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"setupComplete": {}},
+                {"toolCall": {"functionCalls": [{"id": "r-1", "name": "list_terminals", "args": {"detail": "brief"}}]}},
+                {
+                    "toolCall": {
+                        "functionCalls": [
+                            {
+                                "id": "r-2",
+                                "name": "send_terminal_message",
+                                "args": {"message": "run pytest", "target": "scratch"},
+                            }
+                        ]
+                    }
+                },
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gemini(
+                peer,
+                "gemini-3.8-live-extended-thinking",
+                "test-key",
+                usage,
+                recheck,
+                300,
+                thinking="low",
+                tools=["local", "remotea"],
+                screen={"screen": "watch", "terminal_id": "t-1", "terminal_label": "scratch"},
+                connector=fake_connect,
+            )
+        )
+
+        seen_ids = set()
+        for _ in range(100):
+            for m in list(peer.sent_json):
+                if m.get("type") == "tool" and m["id"] not in seen_ids:
+                    seen_ids.add(m["id"])
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": m["id"],
+                                    "ok": True,
+                                    "result": f"Ran {m['name']}",
+                                    "screen": {"screen": "watch", "terminal_label": "scratch"},
+                                }
+                            ),
+                        }
+                    )
+            if len(seen_ids) == 2 and sum(1 for msg in provider.sent if "toolResponse" in msg) == 2:
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        decls = [d["name"] for d in provider.sent[0]["setup"]["tools"][0]["functionDeclarations"]]
+        assert "list_terminals" in decls
+        assert "send_terminal_message" in decls
+        assert "start_terminal" in decls
+        assert all("clientContent" not in msg for msg in provider.sent)
+        resps = [msg["toolResponse"]["functionResponses"][0] for msg in provider.sent if "toolResponse" in msg]
+        assert [r["id"] for r in resps] == ["r-1", "r-2"]
+        assert all(r["response"]["ok"] is True for r in resps)
+
+    asyncio.run(run())
+
+
+def test_bridge_gpt_layer3_remotea_delegation():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {"type": "session.input_transcript.delta", "delta": "tell scratch to run pytest"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-r1", "target": "client"}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="glass-1",
+                tools=["local", "remotea"],
+                screen={"screen": "home"},
+                connector=fake_connect,
+            )
+        )
+
+        tool_msg = None
+        for _ in range(100):
+            tool_msg = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+            if tool_msg:
+                break
+            await asyncio.sleep(0.01)
+        assert tool_msg is not None
+        assert tool_msg["name"] == "send_terminal_message"
+        assert tool_msg["args"] == {"message": "run pytest", "target": "scratch"}
+
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "tool_result",
+                        "id": tool_msg["id"],
+                        "ok": True,
+                        "result": "Sent to scratch (submitted).",
+                        "screen": {"screen": "home"},
+                    }
+                ),
+            }
+        )
+        for _ in range(100):
+            if any(m.get("type") == "session.commentary.append" for m in provider.sent):
+                break
+            await asyncio.sleep(0.01)
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        commentary = next(m for m in provider.sent if m.get("type") == "session.commentary.append")
+        assert commentary["delegation_id"] == "del-r1"
+        assert "Sent to scratch (submitted)." in commentary["text"]
 
     asyncio.run(run())

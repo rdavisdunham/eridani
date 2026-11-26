@@ -37,7 +37,7 @@ from . import (
 )
 from .db import session_scope
 from .domain import DomainError, owned, zone
-from .models import Memory, Note, Task, UserSetting
+from .models import Memory, Note, OwnerSettings, Task
 from .session_models import TERMINAL_RUN_STATES, AgentHost, AgentRun, ExecutionTarget
 
 log = logging.getLogger("uvicorn.error")
@@ -352,8 +352,9 @@ def _err(result: str) -> dict:
 
 
 def _user_timezone(db, owner: str) -> str:
-    setting = db.get(UserSetting, owner)
-    tz = getattr(setting, "timezone", None) if setting is not None else None
+    setting = db.get(OwnerSettings, owner)
+    values = getattr(setting, "values", None) if setting is not None else None
+    tz = values.get("timezone") if isinstance(values, dict) else None
     if isinstance(tz, str) and tz.strip():
         try:
             zone(tz.strip())

@@ -47,8 +47,8 @@ def test_eridani_today_aggregates_tasks_boxes_calendar_and_needs_you(monkeypatch
 
     class FakeDB:
         def get(self, model, key):
-            if model is et.UserSetting:
-                return SimpleNamespace(timezone="America/Chicago")
+            if model is et.OwnerSettings:
+                return SimpleNamespace(values={"timezone": "America/Chicago"})
             return None
 
         def scalars(self, _q):

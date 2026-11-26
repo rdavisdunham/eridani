@@ -1,4 +1,4 @@
-"""Direct voice bridge for Google Glass (Layer 1 audio, Layer 2 controls, Layer 3 terminals, Layer 4 triage)."""
+"""Direct voice bridge for Google Glass (Layers 1–5: audio, controls, terminals, triage, Eridani tools & runs)."""
 
 import asyncio
 import base64
@@ -23,6 +23,12 @@ from .auth import digest
 from .db import session_scope
 from .domain import DomainError
 from .glassface_dani import active, authorized_settings, granted, leased_slot
+from .glassface_eridani_tools import (
+    ERIDANI_TOOL_DECLARATIONS,
+    ERIDANI_TOOL_NAMES,
+    ERIDANI_TOOLS_INSTRUCTIONS,
+    EridaniToolSession,
+)
 from .glassface_gemini_stream import (
     DOWNLINK_RATE,
     GEMINI_LIVE_URL,
@@ -335,7 +341,7 @@ class StartFrame(BaseModel):
         "gemini-3.8-live-extended-thinking"
     )
     thinking: Literal["low", "medium", "high"] | None = None
-    tools: list[Literal["local", "remotea"]] = Field(default_factory=list, max_length=6)
+    tools: list[Literal["local", "remotea", "eridani"]] = Field(default_factory=list, max_length=6)
     screen: dict[str, object] | None = None
 
 
@@ -372,12 +378,20 @@ def _sanitize_screen(screen: dict | None) -> dict | None:
     return out or None
 
 
-def _build_instructions(local_tools: bool, remotea_tools: bool, screen: dict | None) -> str:
+def _build_instructions(
+    local_tools: bool,
+    remotea_tools: bool,
+    screen: dict | None,
+    *,
+    eridani_tools: bool = False,
+) -> str:
     text = BASE_VOICE_INSTRUCTIONS
     if local_tools:
         text += LOCAL_TOOLS_INSTRUCTIONS
     if remotea_tools:
         text += REMOTEA_TOOLS_INSTRUCTIONS
+    if eridani_tools:
+        text += ERIDANI_TOOLS_INSTRUCTIONS
     clean_screen = _sanitize_screen(screen)
     if clean_screen:
         text += "\n\nOpening Glass screen (quoted data): " + json.dumps(clean_screen, ensure_ascii=False)
@@ -403,6 +417,7 @@ def _gemini_setup_payload(
     *,
     local_tools: bool = False,
     remotea_tools: bool = False,
+    eridani_tools: bool = False,
     screen: dict | None = None,
 ) -> dict:
     gen_config: dict = {
@@ -417,7 +432,18 @@ def _gemini_setup_payload(
     setup: dict = {
         "model": f"models/{model}",
         "generationConfig": gen_config,
-        "systemInstruction": {"parts": [{"text": _build_instructions(local_tools, remotea_tools, screen)}]},
+        "systemInstruction": {
+            "parts": [
+                {
+                    "text": _build_instructions(
+                        local_tools,
+                        remotea_tools,
+                        screen,
+                        eridani_tools=eridani_tools,
+                    )
+                }
+            ]
+        },
         "realtimeInputConfig": {
             "automaticActivityDetection": {
                 "disabled": False,
@@ -437,6 +463,8 @@ def _gemini_setup_payload(
         decls.extend(LOCAL_TOOL_DECLARATIONS)
     if remotea_tools:
         decls.extend(REMOTEA_TOOL_DECLARATIONS)
+    if eridani_tools:
+        decls.extend(ERIDANI_TOOL_DECLARATIONS)
     if decls:
         setup["tools"] = [{"functionDeclarations": decls}]
     return {"setup": setup}
@@ -447,15 +475,16 @@ def _gpt_session_start(
     *,
     local_tools: bool = False,
     remotea_tools: bool = False,
+    eridani_tools: bool = False,
     screen: dict | None = None,
 ) -> dict:
     session: dict = {
         "model": model,
         "store": False,
-        "instructions": _build_instructions(local_tools, remotea_tools, screen),
+        "instructions": _build_instructions(local_tools, remotea_tools, screen, eridani_tools=eridani_tools),
         "audio": {"format": {"type": "audio/pcmu", "rate": RATE}, "output": {"voice": "marin"}},
     }
-    if local_tools or remotea_tools:
+    if local_tools or remotea_tools or eridani_tools:
         session["delegation"] = {"type": "client"}
     return {
         "type": "session.start",
@@ -570,13 +599,14 @@ def parse_glass_tool_fast(
     *,
     local_tools: bool = True,
     remotea_tools: bool = True,
+    eridani_tools: bool = False,
 ) -> tuple[str, dict] | None:
-    """Zero-latency deterministic matcher for unambiguous Layer-2 local & Layer-3 Remotea commands."""
+    """Zero-latency deterministic matcher for unambiguous Layer-2..5 Glass, Remotea, and Eridani commands."""
     if local_tools:
         local = parse_local_tool_fast(words)
         if local is not None:
             return local
-    if not remotea_tools:
+    if not (remotea_tools or eridani_tools):
         return None
 
     raw = " ".join(words.strip().split()).rstrip(".?!").strip()
@@ -585,6 +615,32 @@ def parse_glass_tool_fast(
     raw = re.sub(r"[, ]+please$", "", raw, flags=re.I).strip()
     text = raw.casefold()
     if not text:
+        return None
+
+    if eridani_tools:
+        if re.fullmatch(
+            r"(?:what(?:'s| is) on (?:my )?today|read (?:my )?today|my today|"
+            r"today(?:'s)? (?:plan|schedule|tasks|overview)|what needs my attention)",
+            text,
+        ):
+            return ("eridani_today", {"include_calendar": True, "include_needs_you": True})
+        if re.fullmatch(
+            r"(?:(?:check|list|show) (?:my |all |the )?(?:active )?(?:eridani )?(?:agent )?runs|"
+            r"what (?:eridani )?(?:agent )?runs (?:are (?:running|active|open)|do i have))",
+            text,
+        ):
+            return ("eridani_runs", {"query": "", "include_targets": False})
+        if re.fullmatch(r"(?:list|show|what are) (?:my )?(?:open )?tasks|what tasks do i have", text):
+            return ("eridani_tasks", {"action": "list", "status": "open"})
+        run_m = re.fullmatch(
+            r"(?:start|launch) (?:a |an )?(?:eridani |agent )?run (?:on|for) (?:the )?(?:task )?(.{2,100})",
+            raw,
+            flags=re.I,
+        )
+        if run_m:
+            return ("eridani_start_run", {"task": run_m[1].strip(), "confirmed": False})
+
+    if not remotea_tools:
         return None
 
     # List terminals
@@ -700,6 +756,7 @@ def _parse_tool_step(
     *,
     local_tools: bool,
     remotea_tools: bool,
+    eridani_tools: bool = False,
 ) -> tuple[str, dict] | None:
     if not isinstance(parsed, dict):
         return None
@@ -738,6 +795,75 @@ def _parse_tool_step(
         action = str(parsed.get("action") or "").strip().lower()
         if action in ("skip", "next", "queue"):
             return ("triage_terminal", {"action": action})
+    if eridani_tools:
+        if tool == "eridani_today":
+            return ("eridani_today", {"include_calendar": True, "include_needs_you": True})
+        if tool == "eridani_tasks":
+            action = str(parsed.get("action") or "list").strip().lower()
+            if action in ("list", "create", "update", "complete", "reopen"):
+                t_args: dict = {"action": action}
+                for field in ("query", "title", "notes", "status", "due_date", "planned_date", "project"):
+                    if parsed.get(field):
+                        t_args[field] = str(parsed[field])
+                return ("eridani_tasks", t_args)
+        if tool == "eridani_notes":
+            action = str(parsed.get("action") or "search").strip().lower()
+            if action in ("search", "read", "create", "append"):
+                n_args: dict = {"action": action}
+                for field in ("query", "title", "content"):
+                    if parsed.get(field):
+                        n_args[field] = str(parsed[field])
+                return ("eridani_notes", n_args)
+        if tool == "eridani_memory":
+            action = str(parsed.get("action") or "search").strip().lower()
+            if action in ("search", "save", "forget"):
+                m_args: dict = {"action": action, "confirmed": bool(parsed.get("confirmed"))}
+                if parsed.get("query"):
+                    m_args["query"] = str(parsed["query"])
+                if parsed.get("content"):
+                    m_args["content"] = str(parsed["content"])
+                return ("eridani_memory", m_args)
+        if tool == "eridani_runs":
+            return (
+                "eridani_runs",
+                {"query": str(parsed.get("query") or ""), "include_targets": bool(parsed.get("include_targets"))},
+            )
+        if tool == "eridani_start_run":
+            r_args: dict = {
+                "task": str(parsed.get("task") or ""),
+                "prompt": str(parsed.get("prompt") or ""),
+                "target": str(parsed.get("target") or ""),
+                "harness": str(parsed.get("harness") or "claude"),
+                "confirmed": bool(parsed.get("confirmed")),
+            }
+            if parsed.get("model"):
+                r_args["model"] = str(parsed["model"])
+            if parsed.get("effort"):
+                r_args["effort"] = str(parsed["effort"])
+            return ("eridani_start_run", r_args)
+        if tool == "eridani_control_run":
+            action = str(parsed.get("action") or "").strip().lower()
+            if action in (
+                "message",
+                "steer",
+                "pause",
+                "resume",
+                "stop",
+                "answer",
+                "approve",
+                "plan_approve",
+                "plan_revise",
+                "plan_it",
+            ):
+                return (
+                    "eridani_control_run",
+                    {
+                        "action": action,
+                        "target": str(parsed.get("target") or ""),
+                        "text": str(parsed.get("message") or parsed.get("content") or ""),
+                        "confirmed": bool(parsed.get("confirmed")),
+                    },
+                )
     return None
 
 
@@ -748,13 +874,19 @@ def resolve_glass_tools(
     *,
     local_tools: bool = True,
     remotea_tools: bool = False,
+    eridani_tools: bool = False,
     recent_assistant: str = "",
 ) -> list[tuple[str, dict]]:
-    """Resolve a GPT-Live delegated utterance into an ordered sequence (0-4) of Glass/Remotea tool calls."""
-    fast = parse_glass_tool_fast(words, local_tools=local_tools, remotea_tools=remotea_tools)
+    """Resolve a GPT-Live delegated utterance into an ordered sequence (0-4) of Glass/Remotea/Eridani tool calls."""
+    fast = parse_glass_tool_fast(
+        words,
+        local_tools=local_tools,
+        remotea_tools=remotea_tools,
+        eridani_tools=eridani_tools,
+    )
     if fast is not None:
         return [fast]
-    if not words.strip() or not (local_tools or remotea_tools):
+    if not words.strip() or not (local_tools or remotea_tools or eridani_tools):
         return []
 
     from .memory_learning import EXTRACTION_MODEL, provider_request
@@ -778,6 +910,18 @@ def resolve_glass_tools(
                 "triage_terminal",
             ]
         )
+    if eridani_tools:
+        tool_enum.extend(
+            [
+                "eridani_today",
+                "eridani_tasks",
+                "eridani_notes",
+                "eridani_memory",
+                "eridani_runs",
+                "eridani_start_run",
+                "eridani_control_run",
+            ]
+        )
 
     step_schema = {
         "type": "object",
@@ -796,6 +940,16 @@ def resolve_glass_tools(
             "effort": {"type": "string"},
             "action": {"type": "string"},
             "confirmed": {"type": "boolean"},
+            "title": {"type": "string"},
+            "notes": {"type": "string"},
+            "status": {"type": "string"},
+            "due_date": {"type": "string"},
+            "planned_date": {"type": "string"},
+            "project": {"type": "string"},
+            "content": {"type": "string"},
+            "task": {"type": "string"},
+            "prompt": {"type": "string"},
+            "include_targets": {"type": "boolean"},
         },
         "required": [
             "tool",
@@ -812,6 +966,16 @@ def resolve_glass_tools(
             "effort",
             "action",
             "confirmed",
+            "title",
+            "notes",
+            "status",
+            "due_date",
+            "planned_date",
+            "project",
+            "content",
+            "task",
+            "prompt",
+            "include_targets",
         ],
         "additionalProperties": False,
     }
@@ -828,8 +992,8 @@ def resolve_glass_tools(
         "additionalProperties": False,
     }
     rules = [
-        "Map a Google Glass wearer's spoken request to an ordered list of 0 to 4 tool steps (set unused string fields to '' and unused confirmed to false).",
-        "Return steps=[] for chitchat, greetings, or general questions not requesting Glass/terminal actions.",
+        "Map a Google Glass wearer's spoken request to an ordered list of 0 to 4 tool steps (set unused string fields to '' and unused booleans to false).",
+        "Return steps=[] for chitchat, greetings, or general questions not requesting Glass, terminal, or Eridani actions.",
         "If the wearer asks to start multiple terminals and/or send initial messages to them (e.g. 'open two Claude terminals in jarvis, tell the first X and the second Y'), emit the full ordered sequence: start_terminal -> send_terminal_message(target='it', message=X) -> start_terminal -> send_terminal_message(target='it', message=Y).",
     ]
     if local_tools:
@@ -843,6 +1007,7 @@ def resolve_glass_tools(
         )
     if remotea_tools:
         rules.append(
+            "- Direct Remotea terminals ONLY (NOT Eridani managed runs):\n"
             "- list_terminals: detail='brief' or 'names'.\n"
             "- open_terminal: query='<terminal name/topic>', 'it' for an alerted/discussed terminal, or '' for list.\n"
             "- read_terminal: query='' for open/last-discussed terminal, or '<terminal name>'.\n"
@@ -851,6 +1016,17 @@ def resolve_glass_tools(
             "- start_terminal: folder='<repo/folder>', harness='claude' or 'codex' (default 'claude'), optional model/effort.\n"
             "- close_terminal: target='<terminal name>'/'it'/'', confirmed=false on initial close requests; set confirmed=true ONLY when recent_assistant just asked to confirm closing a terminal and wearer replied yes/confirm.\n"
             "- triage_terminal: action in ['skip','next','queue'] to skip an alert, hear the next waiting terminal, or check the queue."
+        )
+    if eridani_tools:
+        rules.append(
+            "- Native Eridani workspace & managed agent runs:\n"
+            "- eridani_today: wearer asks about Today, schedule, or what needs attention.\n"
+            "- eridani_tasks: action in ['list','create','update','complete','reopen'], using query/title/notes/due_date/planned_date/project/status.\n"
+            "- eridani_notes: action in ['search','read','create','append'], using query/title/content.\n"
+            "- eridani_memory: action in ['search','save','forget'], using query/content and confirmed=true ONLY after confirmation for forget.\n"
+            "- eridani_runs: query='<run/task>' or '', include_targets=true when asking which repos/targets can run agents.\n"
+            "- eridani_start_run: start a tracked Eridani agent run via task='<title>' OR prompt='<instruction>' + target='<repo>', harness='claude'|'codex'; confirmed=false first, confirmed=true ONLY after recent_assistant asked to confirm.\n"
+            "- eridani_control_run: action in ['message','steer','pause','resume','stop','answer','approve','plan_approve','plan_revise','plan_it'], target='<run/task>' or '', message='<text>'; for stop/approve/plan_approve/steer set confirmed=false first, confirmed=true ONLY after recent_assistant asked to confirm."
         )
     payload_in: dict[str, object] = {
         "wearer": words[:1200],
@@ -861,7 +1037,7 @@ def resolve_glass_tools(
     body = {
         "model": EXTRACTION_MODEL,
         "store": False,
-        "max_output_tokens": 520,
+        "max_output_tokens": 560,
         "reasoning": {"effort": "low"},
         "instructions": "\n".join(rules),
         "input": json.dumps(payload_in, ensure_ascii=False),
@@ -875,7 +1051,7 @@ def resolve_glass_tools(
         "responses",
         body,
         EXTRACTION_MODEL,
-        agent.reserve_cost(2400),
+        agent.reserve_cost(2600),
         timeout=8,
         agent=agent,
         trace_content=False,
@@ -884,7 +1060,12 @@ def resolve_glass_tools(
     raw_steps = parsed.get("steps") if isinstance(parsed, dict) and isinstance(parsed.get("steps"), list) else []
     out: list[tuple[str, dict]] = []
     for step in raw_steps[:4]:
-        item = _parse_tool_step(step, local_tools=local_tools, remotea_tools=remotea_tools)
+        item = _parse_tool_step(
+            step,
+            local_tools=local_tools,
+            remotea_tools=remotea_tools,
+            eridani_tools=eridani_tools,
+        )
         if item is not None:
             out.append(item)
     return out
@@ -965,19 +1146,28 @@ async def bridge_gemini(
     recheck,
     seconds: int,
     *,
+    identity: str = "",
     thinking: Literal["low", "medium", "high"] | None = None,
     tools: list[str] | None = None,
     screen: dict | None = None,
+    eridani_session=None,
     connector=None,
 ) -> None:
-    """Direct audio + caption + Layer-2/Layer-3 tool bridge between Glass and Gemini 3.8 Live."""
+    """Direct audio + caption + Layer-2..5 tool bridge between Glass and Gemini 3.8 Live."""
     if model not in GEMINI_MODELS:
         raise ValueError(f"Unsupported Gemini Live model: {model}")
 
     tool_set = set(tools or ())
     local_tools = "local" in tool_set
     remotea_tools = "remotea" in tool_set
+    eridani_tools = "eridani" in tool_set
     allowed = (LOCAL_TOOL_NAMES if local_tools else set()) | (REMOTEA_TOOL_NAMES if remotea_tools else set())
+    eridani_exec = (
+        eridani_session
+        if eridani_session is not None
+        else (EridaniToolSession(identity) if eridani_tools and identity else None)
+    )
+    any_tools = bool(allowed) or eridani_exec is not None
 
     async with AsyncExitStack() as resources:
         ws_connect = connector or connect
@@ -1022,7 +1212,10 @@ async def bridge_gemini(
                 name = str(fc.get("name") or "")
                 raw_args = fc.get("args")
                 args = raw_args if isinstance(raw_args, dict) else {}
-                outcome = await pending_tools.invoke(send_peer_json, name, args, call_id=cid)
+                if eridani_exec is not None and name in ERIDANI_TOOL_NAMES:
+                    outcome = await eridani_exec.invoke(name, args)
+                else:
+                    outcome = await pending_tools.invoke(send_peer_json, name, args, call_id=cid)
                 responses.append({"id": cid, "name": name, "response": outcome})
             if responses:
                 with suppress(OSError, WebSocketException):
@@ -1114,7 +1307,7 @@ async def bridge_gemini(
                 if "usageMetadata" in event and session_started_at is not None:
                     usage.seconds = max(usage.seconds, 15.0, clock() - session_started_at)
 
-                if allowed and ready.is_set():
+                if any_tools and ready.is_set():
                     tc = event.get("toolCall") or event.get("tool_call")
                     if isinstance(tc, dict):
                         fcs = tc.get("functionCalls") or tc.get("function_calls") or []
@@ -1177,6 +1370,7 @@ async def bridge_gemini(
                 thinking,
                 local_tools=local_tools,
                 remotea_tools=remotea_tools,
+                eridani_tools=eridani_tools,
                 screen=screen,
             )
         )
@@ -1224,13 +1418,21 @@ async def bridge_gpt(
     tools: list[str] | None = None,
     screen: dict | None = None,
     tool_resolver=None,
+    eridani_session=None,
     connector=None,
 ) -> None:
-    """Direct audio + caption + Layer-2/Layer-3 tool bridge between Glass and OpenAI GPT-Live (marin)."""
+    """Direct audio + caption + Layer-2..5 tool bridge between Glass and OpenAI GPT-Live (marin)."""
     tool_set = set(tools or ())
     local_tools = "local" in tool_set
     remotea_tools = "remotea" in tool_set
+    eridani_tools = "eridani" in tool_set
     allowed = (LOCAL_TOOL_NAMES if local_tools else set()) | (REMOTEA_TOOL_NAMES if remotea_tools else set())
+    eridani_exec = (
+        eridani_session
+        if eridani_session is not None
+        else (EridaniToolSession(identity) if eridani_tools and identity else None)
+    )
+    any_tools = bool(allowed) or eridani_exec is not None
 
     async with AsyncExitStack() as resources:
         ws_connect = connector or connect
@@ -1335,6 +1537,7 @@ async def bridge_gpt(
                         latest_screen,
                         local_tools=local_tools,
                         remotea_tools=remotea_tools,
+                        eridani_tools=eridani_tools,
                         recent_assistant=recent_asst,
                     )
             except Exception as exc:
@@ -1342,11 +1545,14 @@ async def bridge_gpt(
                 steps = []
 
             if not steps:
-                commentary = "No Glass or terminal tool was needed; answer Davin conversationally."
+                commentary = "No Glass, terminal, or Eridani tool was needed; answer Davin conversationally."
             else:
                 outcomes: list[str] = []
                 for idx, (name, args) in enumerate(steps[:4]):
-                    outcome = await pending_tools.invoke(send_peer_json, name, args)
+                    if eridani_exec is not None and name in ERIDANI_TOOL_NAMES:
+                        outcome = await eridani_exec.invoke(name, args)
+                    else:
+                        outcome = await pending_tools.invoke(send_peer_json, name, args)
                     if isinstance(outcome.get("screen"), dict):
                         latest_screen = outcome["screen"]
                     status = "Done" if outcome.get("ok") else "Failed"
@@ -1362,8 +1568,8 @@ async def bridge_gpt(
                                     "content": line.encode("utf-8")[:460].decode("utf-8", errors="ignore"),
                                 }
                             )
-                commentary = "Glass tool results: " + " | ".join(outcomes) if len(outcomes) > 1 else (
-                    f"Glass tool result ({'Done' if outcomes and '(Done)' in outcomes[0] else 'Failed'}): "
+                commentary = "Tool results: " + " | ".join(outcomes) if len(outcomes) > 1 else (
+                    f"Tool result ({'Done' if outcomes and '(Done)' in outcomes[0] else 'Failed'}): "
                     + (outcomes[0].split(": ", 1)[1] if outcomes and ": " in outcomes[0] else "")
                 )
                 if latest_screen:
@@ -1489,7 +1695,7 @@ async def bridge_gpt(
                             turn_words = (turn_words + delta)[-1200:]
                         last_word_at = now_t
                         await send_peer_json({"type": "caption", "role": "user", "text": delta[:4096]})
-                elif kind == "session.delegation.created" and allowed:
+                elif kind == "session.delegation.created" and any_tools:
                     delegation = event.get("delegation") or {}
                     did = delegation.get("id") if isinstance(delegation, dict) else None
                     hint = ""
@@ -1536,6 +1742,7 @@ async def bridge_gpt(
                 model,
                 local_tools=local_tools,
                 remotea_tools=remotea_tools,
+                eridani_tools=eridani_tools,
                 screen=screen,
             )
         )
@@ -1625,6 +1832,7 @@ async def voice_socket(websocket: WebSocket) -> None:
                         usage,
                         recheck,
                         VOICE_SECONDS,
+                        identity=identity,
                         thinking=start.thinking,
                         tools=list(start.tools),
                         screen=start.screen,

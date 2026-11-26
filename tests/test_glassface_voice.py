@@ -812,3 +812,110 @@ def test_bridge_gpt_layer4_terminal_event_and_triage_delegation():
         assert "Opened Schema Design." in delegated_all
 
     asyncio.run(run())
+
+
+def test_parse_glass_tool_fast_close_terminal_never_preconfirms():
+    assert gv.parse_glass_tool_fast("close this terminal") == (
+        "close_terminal",
+        {"target": "it", "confirmed": False},
+    )
+    assert gv.parse_glass_tool_fast("Hey Dani, close the Jarvis terminal please") == (
+        "close_terminal",
+        {"target": "Jarvis", "confirmed": False},
+    )
+
+
+def test_bridge_gpt_executes_multi_step_terminal_plan_sequentially():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {
+                    "type": "session.input_transcript.delta",
+                    "delta": "open two claude terminals in jarvis and ask the first for today and second for yesterday",
+                },
+                {"type": "session.delegation.created", "delegation": {"id": "del-multi", "target": "client"}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        def multi_resolver(_identity, _words, _screen):
+            return [
+                ("start_terminal", {"folder": "jarvis", "harness": "claude"}),
+                ("send_terminal_message", {"message": "Check today usage", "target": "it"}),
+                ("start_terminal", {"folder": "jarvis", "harness": "claude"}),
+                ("send_terminal_message", {"message": "Check yesterday usage", "target": "it"}),
+            ]
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="glass-1",
+                tools=["local", "remotea"],
+                screen={"screen": "home"},
+                tool_resolver=multi_resolver,
+                connector=fake_connect,
+            )
+        )
+
+        dispatched = []
+        seen_ids = set()
+        for _ in range(150):
+            for m in list(peer.sent_json):
+                if m.get("type") == "tool" and m["id"] not in seen_ids:
+                    seen_ids.add(m["id"])
+                    dispatched.append((m["name"], m["args"]))
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": m["id"],
+                                    "ok": True,
+                                    "result": f"Ran {m['name']} #{len(dispatched)}",
+                                    "screen": {"screen": "watch"},
+                                }
+                            ),
+                        }
+                    )
+            if any(
+                m.get("type") == "session.commentary.append" and m.get("delegation_id") == "del-multi"
+                for m in provider.sent
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        assert dispatched == [
+            ("start_terminal", {"folder": "jarvis", "harness": "claude"}),
+            ("send_terminal_message", {"message": "Check today usage", "target": "it"}),
+            ("start_terminal", {"folder": "jarvis", "harness": "claude"}),
+            ("send_terminal_message", {"message": "Check yesterday usage", "target": "it"}),
+        ]
+        all_text = "".join(
+            m["content"]
+            for m in provider.sent
+            if m.get("type") in {"session.thinking.append", "session.commentary.append"}
+            and m.get("delegation_id") == "del-multi"
+        )
+        assert "Ran start_terminal #1" in all_text
+        assert "Ran send_terminal_message #4" in all_text
+
+    asyncio.run(run())

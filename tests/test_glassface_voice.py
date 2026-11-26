@@ -587,3 +587,217 @@ def test_bridge_gpt_layer3_remotea_delegation():
         assert "Sent to scratch (submitted)." in commentary["text"]
 
     asyncio.run(run())
+
+
+def test_parse_glass_tool_fast_layer4_triage_and_open_it():
+    assert gv.parse_glass_tool_fast("skip for now") == ("triage_terminal", {"action": "skip"})
+    assert gv.parse_glass_tool_fast("nothing for now") == ("triage_terminal", {"action": "skip"})
+    assert gv.parse_glass_tool_fast("Hey Dani, next terminal please") == ("triage_terminal", {"action": "next"})
+    assert gv.parse_glass_tool_fast("what's waiting?") == ("triage_terminal", {"action": "queue"})
+    assert gv.parse_glass_tool_fast("let me see it") == ("open_terminal", {"query": "it"})
+    assert gv.parse_glass_tool_fast("pull it up") == ("open_terminal", {"query": "it"})
+
+
+def test_bridge_gemini_layer4_terminal_event_uses_turn_complete_true_and_triage():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"setupComplete": {}},
+                {"toolCall": {"functionCalls": [{"id": "t-1", "name": "triage_terminal", "args": {"action": "skip"}}]}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gemini(
+                peer,
+                "gemini-3.8-live-extended-thinking",
+                "test-key",
+                usage,
+                recheck,
+                300,
+                thinking="low",
+                tools=["local", "remotea"],
+                screen={"screen": "home"},
+                connector=fake_connect,
+            )
+        )
+
+        for _ in range(100):
+            if any(m.get("type") == "ready" for m in peer.sent_json):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "terminal_event",
+                        "event_id": "comp:1",
+                        "terminal_id": "davis:surf-1",
+                        "label": "Scratch 1",
+                        "kind": "finished",
+                        "summary": "All unit tests passed.",
+                        "question": "",
+                        "remaining": 1,
+                    }
+                ),
+            }
+        )
+        # Subsequent spoken audio uplink must continue cleanly after terminal_event
+        await peer.incoming.put({"type": "websocket.receive", "bytes": b"\x22" * 320})
+
+        seen_tool = False
+        for _ in range(100):
+            tool_msg = next((m for m in peer.sent_json if m.get("type") == "tool" and m.get("id") == "t-1"), None)
+            if tool_msg and not seen_tool:
+                seen_tool = True
+                await peer.incoming.put(
+                    {
+                        "type": "websocket.receive",
+                        "text": json.dumps(
+                            {
+                                "type": "tool_result",
+                                "id": "t-1",
+                                "ok": True,
+                                "result": "Skipped Scratch 1. 1 more waiting.",
+                                "screen": {"screen": "home"},
+                            }
+                        ),
+                    }
+                )
+            if seen_tool and any("toolResponse" in m for m in provider.sent) and any("clientContent" in m for m in provider.sent):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        decls = [d["name"] for d in provider.sent[0]["setup"]["tools"][0]["functionDeclarations"]]
+        assert "triage_terminal" in decls
+        cc_frames = [m["clientContent"] for m in provider.sent if "clientContent" in m]
+        assert len(cc_frames) == 1
+        assert cc_frames[0]["turnComplete"] is True
+        assert all(cc.get("turnComplete") is True for cc in cc_frames)
+        prompt_text = cc_frames[0]["turns"][0]["parts"][0]["text"]
+        assert "Scratch 1" in prompt_text
+        assert "1 more waiting" in prompt_text
+        assert any("realtimeInput" in m for m in provider.sent)
+        resp = next(m["toolResponse"]["functionResponses"][0] for m in provider.sent if "toolResponse" in m)
+        assert resp["name"] == "triage_terminal"
+        assert resp["response"]["ok"] is True
+
+    asyncio.run(run())
+
+
+def test_bridge_gpt_layer4_terminal_event_and_triage_delegation():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {"type": "session.input_transcript.delta", "delta": "let me see it"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-l4", "target": "client"}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="glass-1",
+                tools=["local", "remotea"],
+                screen={"screen": "home"},
+                connector=fake_connect,
+            )
+        )
+
+        for _ in range(100):
+            if any(m.get("type") == "ready" for m in peer.sent_json):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "terminal_event",
+                        "event_id": "dec:2",
+                        "terminal_id": "davis:surf-2",
+                        "label": "Schema Design",
+                        "kind": "needs_you",
+                        "summary": "Waiting for DB choice.",
+                        "question": "Use SQLite or Postgres?",
+                        "remaining": 0,
+                    }
+                ),
+            }
+        )
+
+        tool_msg = None
+        for _ in range(100):
+            tool_msg = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+            if tool_msg:
+                break
+            await asyncio.sleep(0.01)
+        assert tool_msg is not None
+        assert tool_msg["name"] == "open_terminal"
+        assert tool_msg["args"] == {"query": "it"}
+
+        await peer.incoming.put(
+            {
+                "type": "websocket.receive",
+                "text": json.dumps(
+                    {
+                        "type": "tool_result",
+                        "id": tool_msg["id"],
+                        "ok": True,
+                        "result": "Opened Schema Design.",
+                        "screen": {"screen": "watch", "terminal_id": "davis:surf-2", "terminal_label": "Schema Design"},
+                    }
+                ),
+            }
+        )
+        for _ in range(100):
+            commentaries = [m for m in provider.sent if m.get("type") == "session.commentary.append"]
+            if len(commentaries) >= 2:
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        commentaries = [m for m in provider.sent if m.get("type") == "session.commentary.append"]
+        unsolicited = [m for m in commentaries if "delegation_id" not in m]
+        delegated = [m for m in commentaries if m.get("delegation_id") == "del-l4"]
+        assert len(unsolicited) == 1
+        assert "Schema Design" in unsolicited[0]["text"]
+        assert "Use SQLite or Postgres?" in unsolicited[0]["text"]
+        assert len(delegated) == 1
+        assert "Opened Schema Design." in delegated[0]["text"]
+
+    asyncio.run(run())

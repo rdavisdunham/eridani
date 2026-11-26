@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .cost_features import LABELS, current_feature
-from .domain import DomainError, advisory, preferences
+from .domain import DomainError, advisory, preferences, zone
 from .models import BudgetReservation, Usage, now
 
 # Identifies the configured estimation rates, not a provider billing statement.
@@ -120,6 +120,7 @@ def usage_report(db, owner):
     """Rolling recorded usage. Missing history is never extrapolated as zero."""
     end = now()
     week, month = end - timedelta(days=7), end - timedelta(days=30)
+    today = end.astimezone(zone(preferences(db, owner)["timezone"])).replace(hour=0, minute=0, second=0, microsecond=0)
     rows = db.scalars(select(Usage).where(
         Usage.owner_id == owner, Usage.created_at >= month, Usage.created_at <= end
     )).all()
@@ -128,23 +129,28 @@ def usage_report(db, owner):
         key = (row.tokens or {}).get("feature", "unattributed")
         key = key if key in LABELS else "unattributed"
         item = features.setdefault(key, {
-            "id": key, "label": LABELS[key], "last_7_days_usd": Decimal(0),
+            "id": key, "label": LABELS[key], "today_usd": Decimal(0), "last_7_days_usd": Decimal(0),
             "last_30_days_usd": Decimal(0), "usage_records": 0,
         })
         item["last_30_days_usd"] += row.amount
         if row.created_at >= week:
             item["last_7_days_usd"] += row.amount
+        if row.created_at >= today:
+            item["today_usd"] += row.amount
         item["usage_records"] += 1
     values = sorted(features.values(), key=lambda f: (-f["last_30_days_usd"], f["id"]))
     since = get_settings().cost_tracking_since
     return {
         "as_of": end.isoformat(),
         "tracking_since": since.isoformat() if since else None,
+        "today_start": today.isoformat(),
+        "today_usd": float(sum((f["today_usd"] for f in values), Decimal(0))),
         "last_7_days_usd": float(sum((f["last_7_days_usd"] for f in values), Decimal(0))),
         "last_30_days_usd": float(sum((f["last_30_days_usd"] for f in values), Decimal(0))),
+        "partial_today": since is None or since.astimezone(UTC) > today,
         "partial_7_days": since is None or since.astimezone(UTC) > week,
         "partial_30_days": since is None or since.astimezone(UTC) > month,
-        "features": [{**f, "last_7_days_usd": float(f["last_7_days_usd"]),
+        "features": [{**f, "today_usd": float(f["today_usd"]), "last_7_days_usd": float(f["last_7_days_usd"]),
                       "last_30_days_usd": float(f["last_30_days_usd"])} for f in values],
     }
 

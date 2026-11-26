@@ -5,7 +5,7 @@ JARVIS_COST_TRACKING_ENABLED=true and JARVIS_BUDGET_ENFORCEMENT_ENABLED=false.
 Open reservations cannot pause Eri in this mode.
 Enabling enforcement restores monthly limits and optional-work thresholds.
 
-Settings → System → Model usage shows rolling last-7-day and last-30-day totals
+Settings → System → Model usage shows today (since local midnight in your time zone) and rolling last-7-day and last-30-day totals
 by feature, plus recorded spend this calendar month and its month-end projection.
 Agent rows (`agent_control`, `agent_summaries`, `session_ledger`) are Eridani's own
 judge, summary and search calls, labeled "(Eridani)"; a coding agent's own spend is

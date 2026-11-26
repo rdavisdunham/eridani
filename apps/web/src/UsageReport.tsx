@@ -1,11 +1,13 @@
 export interface CostReport {
   as_of: string;
   tracking_since: string | null;
+  today_usd: number;
   last_7_days_usd: number;
   last_30_days_usd: number;
+  partial_today: boolean;
   partial_7_days: boolean;
   partial_30_days: boolean;
-  features: { id: string; label: string; last_7_days_usd: number; last_30_days_usd: number; usage_records: number }[];
+  features: { id: string; label: string; today_usd: number; last_7_days_usd: number; last_30_days_usd: number; usage_records: number }[];
 }
 export function costLabel(value: number) {
   if (value > 0 && value < .0001) return "<$0.0001";
@@ -14,14 +16,15 @@ export function costLabel(value: number) {
 export function UsageReport({ report }: { report: CostReport }) {
   return <div className="usage-report">
     <div className="usage-totals">
+      <div><small>Today</small><strong>{costLabel(report.today_usd)}</strong>{report.partial_today && <span className="chip">Partial history</span>}</div>
       <div><small>Last 7 days</small><strong>{costLabel(report.last_7_days_usd)}</strong>{report.partial_7_days && <span className="chip">Partial history</span>}</div>
       <div><small>Last 30 days</small><strong>{costLabel(report.last_30_days_usd)}</strong>{report.partial_30_days && <span className="chip">Partial history</span>}</div>
     </div>
     {report.features.length ? <div className="usage-breakdown">
       <table>
         <caption>Recorded AI cost by feature</caption>
-        <thead><tr><th scope="col">Feature</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead>
-        <tbody>{report.features.map(row => <tr key={row.id}><th scope="row">{row.label}</th><td>{costLabel(row.last_7_days_usd)}</td><td>{costLabel(row.last_30_days_usd)}</td></tr>)}</tbody>
+        <thead><tr><th scope="col">Feature</th><th scope="col">Today</th><th scope="col">7 days</th><th scope="col">30 days</th></tr></thead>
+        <tbody>{report.features.map(row => <tr key={row.id}><th scope="row">{row.label}</th><td>{costLabel(row.today_usd)}</td><td>{costLabel(row.last_7_days_usd)}</td><td>{costLabel(row.last_30_days_usd)}</td></tr>)}</tbody>
       </table>
     </div> : <p className="footnote">No model usage recorded yet. Costs appear as Dani works.</p>}
     <p className="footnote">

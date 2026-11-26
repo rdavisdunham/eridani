@@ -14,11 +14,11 @@ try {
       spent_usd: 1.026, uncertain_usd: 0, active_reserved_usd: 0, reserved_usd: 0,
       limit_usd: 150, remaining_usd: 148.974, projected_month_usd: null, usage_by_model: {},
       report: { as_of: "2026-09-19T12:00:00Z", tracking_since: "2026-09-19T06:00:00Z",
-        partial_7_days: true, partial_30_days: true, last_7_days_usd: 1.026, last_30_days_usd: 1.026,
+        partial_today: false, partial_7_days: true, partial_30_days: true, today_usd: .025, last_7_days_usd: 1.026, last_30_days_usd: 1.026,
         features: [
-          {id: "voice", label: "Voice conversations", last_7_days_usd: 1, last_30_days_usd: 1, usage_records: 3},
-          {id: "assistant", label: "Assistant tasks and chat", last_7_days_usd: .025, last_30_days_usd: .025, usage_records: 4},
-          {id: "note_organization", label: "Note organization", last_7_days_usd: .001, last_30_days_usd: .001, usage_records: 2}
+          {id: "voice", label: "Voice conversations", today_usd: 0, last_7_days_usd: 1, last_30_days_usd: 1, usage_records: 3},
+          {id: "assistant", label: "Assistant tasks and chat", today_usd: .025, last_7_days_usd: .025, last_30_days_usd: .025, usage_records: 4},
+          {id: "note_organization", label: "Note organization", today_usd: 0, last_7_days_usd: .001, last_30_days_usd: .001, usage_records: 2}
         ] } };
     await route.fulfill({ response, json: data });
   });

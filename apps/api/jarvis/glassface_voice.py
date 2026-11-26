@@ -660,12 +660,18 @@ def parse_glass_tool_fast(
     ):
         return ("read_terminal", {"query": ""})
 
-    # Explicit "tell <target> to <message>"
+    # Explicit "tell <target> to <message>" (skip fast-path when chained with another command)
     tell = re.match(r"tell ([^,]{1,60}?) to (.+)", raw, flags=re.I)
     if tell:
         target = tell[1].strip()
         message = tell[2].strip()
-        if target and message:
+        chained = re.search(
+            r"\b(?:and\s+(?:then\s+)?|then\s+|also\s+)"
+            r"(?:set|turn|change|put|drop|raise|mute|keep|switch|open|close|go\s+(?:to|home|back)|start|launch|list|what\s+screen)\b",
+            message,
+            flags=re.I,
+        )
+        if target and message and not chained:
             return ("send_terminal_message", {"message": message, "target": target})
 
     # Explicit "start a new <claude|codex> terminal in <folder>"
@@ -1458,6 +1464,10 @@ async def bridge_gpt(
         assistant_words = ""
         last_assistant_at = 0.0
         seen_delegations: set[str] = set()
+        cancelled_delegations: set[str] = set()
+        pending_commentary_by_event: dict[str, tuple[str, str]] = {}
+        last_delegated_commentary: tuple[str, str] | None = None
+        retried_delegations: set[str] = set()
 
         downlink = GeminiDownlink()
         pending_tools = PendingTools(allowed)
@@ -1474,6 +1484,7 @@ async def bridge_gpt(
 
         async def send_gpt_commentary(content: str, delegation_id: str | None = None, limit: int = 460) -> None:
             """Send OpenAI v1/live/sessions commentary/thinking using the required `delegation_id` + `content` fields."""
+            nonlocal last_delegated_commentary
             clipped = content.strip()[:2800]
             if not clipped:
                 return
@@ -1493,18 +1504,26 @@ async def bridge_gpt(
                 chunks.append(piece)
                 remaining = remaining[len(piece):].lstrip()
             for part in chunks[:-1]:
+                ev_id = str(uuid4())
                 await send_ws(
                     {
                         "type": "session.thinking.append",
-                        "event_id": str(uuid4()),
+                        "event_id": ev_id,
                         "delegation_id": delegation_id,
                         "content": part,
                     }
                 )
+            final_ev_id = str(uuid4())
+            if delegation_id:
+                pending_commentary_by_event[final_ev_id] = (delegation_id, clipped)
+                last_delegated_commentary = (delegation_id, clipped)
+                if len(pending_commentary_by_event) > 24:
+                    oldest = next(iter(pending_commentary_by_event))
+                    pending_commentary_by_event.pop(oldest, None)
             await send_ws(
                 {
                     "type": "session.commentary.append",
-                    "event_id": str(uuid4()),
+                    "event_id": final_ev_id,
                     "delegation_id": delegation_id,
                     "content": chunks[-1],
                 }
@@ -1558,7 +1577,7 @@ async def bridge_gpt(
                     status = "Done" if outcome.get("ok") else "Failed"
                     line = f"{name} ({status}): {outcome.get('result') or ''}"
                     outcomes.append(line)
-                    if len(steps) > 1 and idx + 1 < len(steps):
+                    if len(steps) > 1 and idx + 1 < len(steps) and delegation_id not in cancelled_delegations:
                         with suppress(OSError, WebSocketException):
                             await send_ws(
                                 {
@@ -1574,8 +1593,9 @@ async def bridge_gpt(
                 )
                 if latest_screen:
                     commentary += " | Screen: " + json.dumps(latest_screen, ensure_ascii=False)
+            target_did = None if delegation_id in cancelled_delegations else delegation_id
             with suppress(OSError, WebSocketException):
-                await send_gpt_commentary(commentary, delegation_id=delegation_id)
+                await send_gpt_commentary(commentary, delegation_id=target_did)
 
         async def from_glass() -> None:
             nonlocal latest_screen
@@ -1658,7 +1678,20 @@ async def bridge_gpt(
 
                 if kind == "error":
                     err = event.get("error") or {}
-                    msg = err.get("message") if isinstance(err, dict) else None
+                    msg = str(err.get("message") or "") if isinstance(err, dict) else ""
+                    code = str(err.get("code") or "") if isinstance(err, dict) else ""
+                    err_ev_id = str(err.get("event_id") or "") if isinstance(err, dict) else ""
+                    if ready.is_set() and ("delegation" in msg.lower() or "delegation" in code.lower()):
+                        retry = pending_commentary_by_event.pop(err_ev_id, None) or last_delegated_commentary
+                        log.warning("GPT-Live delegation lifecycle error (non-fatal): %s", msg[:200])
+                        if retry is not None:
+                            stale_did, stale_text = retry
+                            cancelled_delegations.add(stale_did)
+                            if stale_did not in retried_delegations:
+                                retried_delegations.add(stale_did)
+                                with suppress(OSError, WebSocketException):
+                                    await send_gpt_commentary(stale_text, delegation_id=None)
+                        continue
                     raise live.LiveFailure(str(msg or "Voice provider error")[:200])
 
                 if not ready.is_set():
@@ -1715,6 +1748,11 @@ async def bridge_gpt(
                         t = asyncio.create_task(handle_delegation(did, hint))
                         tool_tasks.add(t)
                         t.add_done_callback(tool_tasks.discard)
+                elif kind in {"session.delegation.cancelled", "session.delegation.completed"}:
+                    delegation = event.get("delegation") or {}
+                    did = delegation.get("id") if isinstance(delegation, dict) else event.get("delegation_id")
+                    if isinstance(did, str) and did:
+                        cancelled_delegations.add(did)
                 elif kind == "session.closed":
                     provider_ended = True
                     await downlink.frames.join()

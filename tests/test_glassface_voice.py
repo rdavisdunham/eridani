@@ -1115,3 +1115,184 @@ def test_bridge_gpt_layer5_mixed_in_process_and_glass_ws_steps():
         assert "Opened jarvis." in combined
 
     asyncio.run(run())
+
+
+def test_parse_glass_tool_fast_skips_chained_tell_command():
+    # Single-command "tell ... to ..." still uses the zero-latency fast path
+    assert gv.parse_glass_tool_fast(
+        "tell backend to run pytest",
+        local_tools=True,
+        remotea_tools=True,
+    ) == ("send_terminal_message", {"message": "run pytest", "target": "backend"})
+    # Chained multi-tool utterances bypass the single-tool fast path so resolve_glass_tools plans both steps
+    assert (
+        gv.parse_glass_tool_fast(
+            "tell backend to run pytest and set volume to 5",
+            local_tools=True,
+            remotea_tools=True,
+        )
+        is None
+    )
+
+
+def test_bridge_gpt_recovers_from_stale_delegation_error():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {"type": "session.input_transcript.delta", "delta": "Open terminals"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-stale", "target": "client"}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="bot-1",
+                tools=["local"],
+                screen={"screen": "home"},
+                tool_resolver=lambda _id, _w, _s: [("navigate_glass", {"command": "open", "value": "terminals"})],
+                connector=fake_connect,
+            )
+        )
+
+        replied = False
+        errored = False
+        for _ in range(120):
+            if not replied:
+                g_tool = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+                if g_tool:
+                    replied = True
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": g_tool["id"],
+                                    "ok": True,
+                                    "result": "Opened Terminals.",
+                                    "screen": {"screen": "roster"},
+                                }
+                            ),
+                        }
+                    )
+            first_comm = next(
+                (m for m in provider.sent if m.get("type") == "session.commentary.append" and m.get("delegation_id") == "del-stale"),
+                None,
+            )
+            if first_comm and not errored:
+                errored = True
+                await provider.events.put(
+                    {
+                        "type": "error",
+                        "error": {
+                            "code": "invalid_delegation",
+                            "message": "Unknown delegation_id del-stale",
+                            "event_id": first_comm["event_id"],
+                        },
+                    }
+                )
+            if any(
+                m.get("type") == "session.commentary.append" and m.get("delegation_id") is None
+                for m in provider.sent
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        commentaries = [m for m in provider.sent if m.get("type") == "session.commentary.append"]
+        assert any(m.get("delegation_id") == "del-stale" for m in commentaries)
+        retried = [m for m in commentaries if m.get("delegation_id") is None]
+        assert len(retried) == 1
+        assert "Opened Terminals." in retried[0]["content"]
+
+    asyncio.run(run())
+
+
+def test_bridge_gpt_cancelled_delegation_uses_unsolicited_commentary():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {"type": "session.input_transcript.delta", "delta": "Open terminals"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-cancel", "target": "client"}},
+                {"type": "session.delegation.cancelled", "delegation": {"id": "del-cancel"}},
+            ]
+        )
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="bot-1",
+                tools=["local"],
+                screen={"screen": "home"},
+                tool_resolver=lambda _id, _w, _s: [("navigate_glass", {"command": "open", "value": "terminals"})],
+                connector=fake_connect,
+            )
+        )
+
+        replied = False
+        for _ in range(120):
+            if not replied:
+                g_tool = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+                if g_tool:
+                    replied = True
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": g_tool["id"],
+                                    "ok": True,
+                                    "result": "Opened Terminals.",
+                                }
+                            ),
+                        }
+                    )
+            if any(m.get("type") == "session.commentary.append" for m in provider.sent):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        commentaries = [m for m in provider.sent if m.get("type") == "session.commentary.append"]
+        assert len(commentaries) == 1
+        assert commentaries[0]["delegation_id"] is None
+        assert "Opened Terminals." in commentaries[0]["content"]
+
+    asyncio.run(run())

@@ -56,6 +56,25 @@ def test_windows_owner_isolation_and_unknown_usage(monkeypatch):
         assert budget.summary(db, "davin")["projected_month_usd"] is None
 
 
+def test_today_starts_at_local_midnight(monkeypatch):
+    instant = datetime(2026, 9, 19, 12, tzinfo=UTC)  # 07:00 in the default America/Chicago zone
+    monkeypatch.setattr(budget, "now", lambda: instant)
+    monkeypatch.setattr(get_settings(), "cost_tracking_since", instant - timedelta(days=2))
+    with session_scope() as db:
+        for key, hours, cost in [("this-morning", 1, 1), ("last-night", 8, 2)]:
+            db.add(BudgetReservation(id=key, owner_id="davin", model="test", amount=Decimal(cost)))
+            db.flush()
+            db.add(Usage(request_id=key, reservation_id=key, owner_id="davin", model="test",
+                         amount=Decimal(cost), tokens={"feature": "voice"},
+                         created_at=instant - timedelta(hours=hours)))
+        db.flush()
+        report = budget.usage_report(db, "davin")
+        assert report["today_start"] == "2026-09-19T00:00:00-05:00"
+        assert report["today_usd"] == 1
+        assert report["last_7_days_usd"] == 3
+        assert not report["partial_today"]
+        assert report["features"][0]["today_usd"] == 1
+
 @pytest.mark.asyncio
 async def test_parallel_feature_scopes_propagate_to_threads_and_reset():
     @feature("note_organization")

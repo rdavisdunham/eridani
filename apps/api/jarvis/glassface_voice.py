@@ -1172,6 +1172,44 @@ async def bridge_gpt(
             async with downlink.write:
                 await peer.send_json(payload)
 
+        async def send_gpt_commentary(content: str, delegation_id: str | None = None, limit: int = 460) -> None:
+            """Send OpenAI v1/live/sessions commentary/thinking using the required `delegation_id` + `content` fields."""
+            clipped = content.strip()[:2800]
+            if not clipped:
+                return
+            chunks: list[str] = []
+            remaining = clipped
+            while remaining:
+                encoded = remaining.encode("utf-8")
+                if len(encoded) <= limit:
+                    chunks.append(remaining)
+                    break
+                piece = encoded[:limit].decode("utf-8", errors="ignore")
+                if not piece:
+                    break
+                cut = piece.rfind(" ")
+                if cut > limit // 2:
+                    piece = piece[:cut]
+                chunks.append(piece)
+                remaining = remaining[len(piece):].lstrip()
+            for part in chunks[:-1]:
+                await send_ws(
+                    {
+                        "type": "session.thinking.append",
+                        "event_id": str(uuid4()),
+                        "delegation_id": delegation_id,
+                        "content": part,
+                    }
+                )
+            await send_ws(
+                {
+                    "type": "session.commentary.append",
+                    "event_id": str(uuid4()),
+                    "delegation_id": delegation_id,
+                    "content": chunks[-1],
+                }
+            )
+
         async def handle_delegation(delegation_id: str) -> None:
             nonlocal latest_screen
             # Brief settle so trailing input_transcript deltas arrive before resolving.
@@ -1205,14 +1243,7 @@ async def bridge_gpt(
                 if latest_screen:
                     commentary += " | Screen: " + json.dumps(latest_screen, ensure_ascii=False)
             with suppress(OSError, WebSocketException):
-                await send_ws(
-                    {
-                        "type": "session.commentary.append",
-                        "event_id": str(uuid4()),
-                        "delegation_id": delegation_id,
-                        "text": commentary[:3000],
-                    }
-                )
+                await send_gpt_commentary(commentary, delegation_id=delegation_id)
 
         async def from_glass() -> None:
             nonlocal latest_screen
@@ -1247,13 +1278,7 @@ async def bridge_gpt(
                                 "alert_terminal_id": meta["terminal_id"],
                                 "alert_terminal_label": meta["terminal_label"],
                             }
-                            await send_ws(
-                                {
-                                    "type": "session.commentary.append",
-                                    "event_id": str(uuid4()),
-                                    "text": alert_text[:3000],
-                                }
-                            )
+                            await send_gpt_commentary(alert_text, delegation_id=None)
                         continue
                     continue
 

@@ -348,7 +348,7 @@ def test_bridge_gpt_multi_turn_and_layer2_local_delegation():
         assert any(m.get("type") == "session.input_audio.append" for m in provider.sent)
         commentary = next(m for m in provider.sent if m.get("type") == "session.commentary.append")
         assert commentary["delegation_id"] == "del-1"
-        assert "Opened Terminals." in commentary["text"]
+        assert "Opened Terminals." in commentary["content"]
         assert any(m.get("type") == "clear" for m in peer.sent_json)
         assert len(peer.sent_bytes) > 0
         # Verify GPT_GAIN_LUT boosted downlink audio above original 2000 linear amplitude
@@ -584,7 +584,7 @@ def test_bridge_gpt_layer3_remotea_delegation():
 
         commentary = next(m for m in provider.sent if m.get("type") == "session.commentary.append")
         assert commentary["delegation_id"] == "del-r1"
-        assert "Sent to scratch (submitted)." in commentary["text"]
+        assert "Sent to scratch (submitted)." in commentary["content"]
 
     asyncio.run(run())
 
@@ -792,12 +792,23 @@ def test_bridge_gpt_layer4_terminal_event_and_triage_delegation():
         await task
 
         commentaries = [m for m in provider.sent if m.get("type") == "session.commentary.append"]
-        unsolicited = [m for m in commentaries if "delegation_id" not in m]
+        unsolicited = [m for m in commentaries if "delegation_id" in m and m["delegation_id"] is None]
         delegated = [m for m in commentaries if m.get("delegation_id") == "del-l4"]
         assert len(unsolicited) == 1
-        assert "Schema Design" in unsolicited[0]["text"]
-        assert "Use SQLite or Postgres?" in unsolicited[0]["text"]
+        unsolicited_all = "".join(
+            m["content"]
+            for m in provider.sent
+            if m.get("type") in {"session.thinking.append", "session.commentary.append"} and m.get("delegation_id") is None
+        )
+        assert "Schema Design" in unsolicited_all
+        assert "Use SQLite or Postgres?" in unsolicited_all
         assert len(delegated) == 1
-        assert "Opened Schema Design." in delegated[0]["text"]
+        delegated_all = "".join(
+            m["content"]
+            for m in provider.sent
+            if m.get("type") in {"session.thinking.append", "session.commentary.append"}
+            and m.get("delegation_id") == "del-l4"
+        )
+        assert "Opened Schema Design." in delegated_all
 
     asyncio.run(run())

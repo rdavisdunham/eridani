@@ -919,3 +919,199 @@ def test_bridge_gpt_executes_multi_step_terminal_plan_sequentially():
         assert "Ran send_terminal_message #4" in all_text
 
     asyncio.run(run())
+
+
+def test_parse_glass_tool_fast_disambiguates_direct_terminal_vs_eridani_run():
+    assert gv.parse_glass_tool_fast(
+        "start a claude terminal in jarvis", local_tools=True, remotea_tools=True, eridani_tools=True
+    ) == ("start_terminal", {"folder": "jarvis", "harness": "claude"})
+    assert gv.parse_glass_tool_fast(
+        "start a run on fix wifi", local_tools=True, remotea_tools=True, eridani_tools=True
+    ) == ("eridani_start_run", {"task": "fix wifi", "confirmed": False})
+    assert gv.parse_glass_tool_fast(
+        "what's on my today?", local_tools=True, remotea_tools=True, eridani_tools=True
+    ) == ("eridani_today", {"include_calendar": True, "include_needs_you": True})
+    assert gv.parse_glass_tool_fast(
+        "check my eridani runs", local_tools=True, remotea_tools=True, eridani_tools=True
+    ) == ("eridani_runs", {"query": "", "include_targets": False})
+
+
+def test_bridge_gemini_layer5_dual_path_eridani_in_process_and_glass_ws():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"setupComplete": {}},
+                {"toolCall": {"functionCalls": [{"id": "e-1", "name": "eridani_today", "args": {}}]}},
+                {"toolCall": {"functionCalls": [{"id": "g-1", "name": "open_terminal", "args": {"query": "jarvis"}}]}},
+            ]
+        )
+
+        class FakeEridaniSession:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke(self, name, args):
+                self.calls.append((name, args))
+                return {"ok": True, "result": "Today: 2 due tasks."}
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        eridani_sess = FakeEridaniSession()
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gemini(
+                peer,
+                "gemini-3.8-live-extended-thinking",
+                "test-key",
+                usage,
+                recheck,
+                300,
+                identity="bot-1",
+                thinking="low",
+                tools=["local", "remotea", "eridani"],
+                screen={"screen": "home"},
+                eridani_session=eridani_sess,
+                connector=fake_connect,
+            )
+        )
+
+        replied_glass = False
+        for _ in range(100):
+            if not replied_glass:
+                glass_tool = next((m for m in peer.sent_json if m.get("type") == "tool" and m["id"] == "g-1"), None)
+                if glass_tool:
+                    replied_glass = True
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": "g-1",
+                                    "ok": True,
+                                    "result": "Opened jarvis.",
+                                    "screen": {"screen": "watch"},
+                                }
+                            ),
+                        }
+                    )
+            if sum(1 for m in provider.sent if "toolResponse" in m) == 2:
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        decls = [d["name"] for d in provider.sent[0]["setup"]["tools"][0]["functionDeclarations"]]
+        assert "eridani_today" in decls
+        assert "eridani_start_run" in decls
+        assert "eridani_control_run" in decls
+        assert len(decls) == 17
+        # eridani_today executed in-process (never sent to Glass WS); open_terminal went to Glass WS
+        assert eridani_sess.calls == [("eridani_today", {})]
+        assert [m["name"] for m in peer.sent_json if m.get("type") == "tool"] == ["open_terminal"]
+        resps = [m["toolResponse"]["functionResponses"][0] for m in provider.sent if "toolResponse" in m]
+        assert [r["id"] for r in resps] == ["e-1", "g-1"]
+        assert "Today: 2 due tasks." in resps[0]["response"]["result"]
+
+    asyncio.run(run())
+
+
+def test_bridge_gpt_layer5_mixed_in_process_and_glass_ws_steps():
+    async def run():
+        provider = FakeProviderWS(
+            [
+                {"type": "session.started"},
+                {"type": "session.input_transcript.delta", "delta": "check my today and open jarvis terminal"},
+                {"type": "session.delegation.created", "delegation": {"id": "del-l5", "target": "client"}},
+            ]
+        )
+
+        class FakeEridaniSession:
+            def __init__(self):
+                self.calls = []
+
+            async def invoke(self, name, args):
+                self.calls.append((name, args))
+                return {"ok": True, "result": "Today: Standup at 10am."}
+
+        @asynccontextmanager
+        async def fake_connect(_url, **_kw):
+            yield provider
+
+        eridani_sess = FakeEridaniSession()
+        peer = FakeGlassPeer([])
+        usage = live.Usage()
+
+        async def recheck():
+            return None
+
+        task = asyncio.create_task(
+            gv.bridge_gpt(
+                peer,
+                "gpt-live-1",
+                "test-openai-key",
+                usage,
+                recheck,
+                300,
+                identity="bot-1",
+                tools=["local", "remotea", "eridani"],
+                screen={"screen": "home"},
+                tool_resolver=lambda _id, _w, _s: [
+                    ("eridani_today", {}),
+                    ("open_terminal", {"query": "jarvis"}),
+                ],
+                eridani_session=eridani_sess,
+                connector=fake_connect,
+            )
+        )
+
+        replied = False
+        for _ in range(120):
+            if not replied:
+                g_tool = next((m for m in peer.sent_json if m.get("type") == "tool"), None)
+                if g_tool:
+                    replied = True
+                    await peer.incoming.put(
+                        {
+                            "type": "websocket.receive",
+                            "text": json.dumps(
+                                {
+                                    "type": "tool_result",
+                                    "id": g_tool["id"],
+                                    "ok": True,
+                                    "result": "Opened jarvis.",
+                                    "screen": {"screen": "watch"},
+                                }
+                            ),
+                        }
+                    )
+            if any(
+                m.get("type") == "session.commentary.append" and m.get("delegation_id") == "del-l5"
+                for m in provider.sent
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+        await peer.incoming.put({"type": "websocket.receive", "text": json.dumps({"type": "stop"})})
+        await task
+
+        assert eridani_sess.calls == [("eridani_today", {})]
+        assert [m["name"] for m in peer.sent_json if m.get("type") == "tool"] == ["open_terminal"]
+        combined = "".join(
+            m["content"]
+            for m in provider.sent
+            if m.get("type") in {"session.thinking.append", "session.commentary.append"}
+            and m.get("delegation_id") == "del-l5"
+        )
+        assert "Standup at 10am" in combined
+        assert "Opened jarvis." in combined
+
+    asyncio.run(run())
